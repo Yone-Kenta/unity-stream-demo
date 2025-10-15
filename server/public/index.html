@@ -1,0 +1,141 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Unity Name Sync Demo</title>
+    <style>
+      body {
+        font-family: system-ui, sans-serif;
+        padding: 2rem;
+        max-width: 30rem;
+        margin: 0 auto;
+      }
+
+      img {
+        max-width: 100%;
+        border-radius: 0.5rem;
+        background: #111;
+      }
+
+      label,
+      input,
+      button {
+        display: block;
+        width: 100%;
+        margin-bottom: 0.75rem;
+      }
+
+      #currentName {
+        font-weight: bold;
+      }
+    </style>
+  </head>
+  <body>
+    <h1>Unity Name Sync</h1>
+    <p>Current name: <span id="currentName">Loading…</span></p>
+    <form id="nameForm">
+      <label for="nameInput">New name</label>
+      <input id="nameInput" name="name" placeholder="Enter a name" required />
+      <button type="submit">Send to Unity</button>
+    </form>
+    <h2>Main Camera</h2>
+    <p>
+      The latest frame from the Unity main camera will appear below when the
+      streamer is running.
+    </p>
+    <img
+      id="cameraFrame"
+      alt="Unity main camera stream"
+      src=""
+      hidden
+    />
+
+    <script type="module">
+      const nameForm = document.getElementById('nameForm');
+      const nameInput = document.getElementById('nameInput');
+      const currentName = document.getElementById('currentName');
+      const cameraFrame = document.getElementById('cameraFrame');
+      const protocol = window.location.protocol === 'https:' ? 'wss' : 'ws';
+      const ws = new WebSocket(`${protocol}://${window.location.host}/ws`);
+      let lastFrameToken = 0;
+
+      nameForm.addEventListener('submit', async event => {
+        event.preventDefault();
+        const name = nameInput.value.trim();
+
+        if (!name) {
+          return;
+        }
+
+        try {
+          const response = await fetch('/name', {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json'
+            },
+            body: JSON.stringify({ name })
+          });
+
+          if (!response.ok) {
+            const error = await response.json().catch(() => ({}));
+            alert(error.error ?? 'Failed to update name');
+          } else {
+            nameInput.value = '';
+          }
+        } catch (error) {
+          console.error(error);
+          alert('Network error while sending name');
+        }
+      });
+
+      ws.addEventListener('open', () => {
+        console.info('Connected to realtime updates');
+      });
+
+      ws.addEventListener('message', event => {
+        try {
+          const payload = JSON.parse(event.data);
+          if (payload?.type === 'name:update') {
+            currentName.textContent = payload.name || '(empty)';
+          } else if (payload?.type === 'frame:update') {
+            requestAnimationFrame(() => refreshFrame(payload.updatedAt));
+          }
+        } catch (error) {
+          console.error('Failed to parse message', error);
+        }
+      });
+
+      ws.addEventListener('close', () => {
+        console.warn('Realtime connection closed');
+      });
+
+      ws.addEventListener('error', error => {
+        console.error('Realtime connection error', error);
+      });
+
+      fetch('/name')
+        .then(res => res.json())
+        .then(data => {
+          currentName.textContent = data?.name || '(empty)';
+        })
+        .catch(() => {
+          currentName.textContent = '(unknown)';
+        });
+
+      function refreshFrame(timestamp = Date.now()) {
+        if (timestamp === lastFrameToken) {
+          return;
+        }
+
+        lastFrameToken = timestamp;
+        const cacheBuster = `?t=${encodeURIComponent(timestamp)}`;
+        cameraFrame.src = `/frame${cacheBuster}`;
+        cameraFrame.hidden = false;
+      }
+
+      cameraFrame.addEventListener('error', () => {
+        cameraFrame.hidden = true;
+      });
+    </script>
+  </body>
+</html>
