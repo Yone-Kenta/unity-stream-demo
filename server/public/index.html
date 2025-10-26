@@ -101,12 +101,6 @@
         color: #555;
       }
 
-      .rename-button {
-        margin-bottom: 0;
-        padding: 0.35rem 0.75rem;
-        width: auto;
-      }
-
       .screenshot-card a {
         font-size: 0.85rem;
         color: #0a66c2;
@@ -145,12 +139,6 @@
       .like-button[disabled] {
         opacity: 0.6;
         cursor: default;
-      }
-
-      .rename-button {
-        margin-bottom: 0;
-        padding: 0.25rem 0.5rem;
-        font-size: 0.8rem;
       }
 
       .screenshot-meta {
@@ -246,19 +234,6 @@
       const likedCache = new Set(
         JSON.parse(localStorage.getItem('screenshotLikes') ?? '[]')
       );
-
-        const searchParams = new URLSearchParams(window.location.search);
-        const adminTokenFromQueryRaw = searchParams.get('adminToken');
-        const adminTokenFromQuery = adminTokenFromQueryRaw
-          ? adminTokenFromQueryRaw.trim()
-          : '';
-        if (adminTokenFromQuery) {
-          localStorage.setItem('screenshotAdminToken', adminTokenFromQuery);
-        }
-        const storedAdminToken = (
-          localStorage.getItem('screenshotAdminToken') ?? ''
-        ).trim();
-        const adminToken = adminTokenFromQuery || storedAdminToken;
 
       updateScreenshotEmptyState();
 
@@ -558,25 +533,6 @@
           titleEl.textContent = entry.name?.trim() || 'Untitled screenshot';
         }
 
-        let renameButton = card.querySelector('.rename-button');
-        const header = card.querySelector('.screenshot-header');
-        if (adminToken && header) {
-          if (!renameButton) {
-            renameButton = document.createElement('button');
-            renameButton.type = 'button';
-            renameButton.className = 'rename-button';
-            renameButton.textContent = 'Rename';
-            renameButton.addEventListener('click', () =>
-              promptRename(entry.id)
-            );
-            header.append(renameButton);
-          }
-          renameButton.hidden = false;
-        } else if (renameButton) {
-          renameButton.remove();
-          renameButton = null;
-        }
-
         const imageEl = card.querySelector('img');
         if (imageEl) {
           imageEl.src = `${entry.url}${cacheBuster}`;
@@ -661,54 +617,6 @@
           likeButton.textContent = `❤️ ${likes}`;
           likeButton.disabled = likedCache.has(id);
         }
-      }
-
-      function promptRename(id) {
-        if (!adminToken) {
-          alert(
-            '管理者トークンが設定されていません。URL に ?adminToken=YOUR_TOKEN を付けてアクセスしてください。'
-          );
-          return;
-        }
-
-        const card = screenshotCards.get(id);
-        const currentTitle =
-          card?.querySelector('.screenshot-title')?.textContent ?? '';
-        const next = prompt('スクリーンショットの名前を入力してください。', currentTitle);
-
-        if (next === null) {
-          return;
-        }
-
-        const trimmed = next.trim();
-        if (!trimmed) {
-          alert('名前は空にできません。');
-          return;
-        }
-
-        fetch(`/screenshots/${encodeURIComponent(id)}/name`, {
-          method: 'PATCH',
-          headers: {
-            'Content-Type': 'application/json',
-            'x-admin-token': adminToken
-          },
-          body: JSON.stringify({ name: trimmed })
-        })
-          .then(response => {
-            if (!response.ok) {
-              return response.text().then(text => {
-                throw new Error(text || 'Failed to update screenshot name');
-              });
-            }
-            return response.json();
-          })
-          .then(updated => {
-            renderScreenshot(updated, false);
-          })
-          .catch(error => {
-            console.error('Failed to update screenshot name', error);
-            alert('名前の更新に失敗しました。');
-          });
       }
 
       function updateScreenshotEmptyState() {

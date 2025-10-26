@@ -1,6 +1,6 @@
 # Unity Streaming & Screenshot Guide (Project 4)
 
-This Unity project streams the main camera to a Node.js companion server and captures on-demand screenshots. The hosted web page shows the live feed, a screenshot gallery (with names and likes), and a real-time comment board.
+This Unity project streams the main camera to a Node.js companion server and captures on-demand screenshots. The hosted web page shows the live feed, a screenshot gallery (with timestamps and likes), and a real-time comment board.
 
 ## Prerequisites
 
@@ -41,19 +41,15 @@ This Unity project streams the main camera to a Node.js companion server and cap
 
 > **Render/Railway deployments:** `server/uploads` is ephemeral. Screenshots live as long as the instance stays awake; redeploys or restarts clear the stored images and metadata.
 
-## Screenshot Names & Likes
+## Screenshot Likes
 
-- Every screenshot stores a `name` (default “Untitled screenshot”) and `likes` counter.
-- Anyone viewing the gallery can press the ❤️ button once per browser (tracked via `localStorage`) to send a like.
-- Operators can rename screenshots through the admin API:
-  1. Set an environment variable on the server: `SCREENSHOT_ADMIN_TOKEN=<your-secret>`.
-  2. Visit the gallery with `?adminToken=<your-secret>` appended to the URL. Rename buttons will appear on each card.
-  3. Clicking **Rename** prompts for a new title. The change is saved and broadcast instantly.
+- Each screenshot tracks a like counter.
+- Visitors can press the ❤ button once per browser session (tracked via `localStorage`) to send a like.
 
 ## Using the Web UI
 
 - **Live feed:** Images refresh automatically when Unity uploads a new frame.
-- **Screenshot gallery:** Press `S` in Unity to capture a still. Cards show the title, timestamp, file size, like count, and a link to the full-resolution image.
+- **Screenshot gallery:** Press `S` in Unity to capture a still. Cards show the timestamp, file size, like count, and a link to the full-resolution image.
 - **Likes:** Visitors can like a screenshot once per browser session (subsequent presses are disabled).
 - **Comments:** Post quick notes or feedback; updates appear immediately for everyone connected.
 
@@ -61,7 +57,7 @@ This Unity project streams the main camera to a Node.js companion server and cap
 
 - `[MainCameraStreamer] Upload failed` in Unity:
   - Confirm frame and screenshot URLs point to the active server.
-  - Increase `Request Timeout Seconds` (e.g., 5–10s) if Render needs time to wake up.
+  - Increase `Request Timeout Seconds` (e.g., 5–10 s) if Render needs time to wake up.
   - Check for firewall or proxy rules blocking outgoing HTTP requests.
 - Browser shows “No frame available yet”:
   - Ensure `MainCameraStreamer` is enabled in Play mode.
