@@ -1,12 +1,14 @@
-server/uploads/
-!server/uploads/.gitkeep
-
 # Unity generated folders
 Library/
 Temp/
 Logs/
 obj/
 UserSettings/
+.vs/
+
+# Local editor files
+.vscode/
+
+# Captured data (created at runtime)
 server/uploads/
 !server/uploads/.gitkeep
-

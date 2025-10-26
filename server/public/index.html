@@ -105,6 +105,46 @@
       .screenshot-card a:hover {
         text-decoration: underline;
       }
+
+      .screenshot-header {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 0.5rem;
+      }
+
+      .screenshot-header h3 {
+        margin: 0;
+        font-size: 1rem;
+        font-weight: 600;
+      }
+
+      .screenshot-actions {
+        display: flex;
+        align-items: center;
+        gap: 0.5rem;
+      }
+
+      .screenshot-actions button {
+        margin-bottom: 0;
+        padding: 0.35rem 0.75rem;
+      }
+
+      .like-button[disabled] {
+        opacity: 0.6;
+        cursor: default;
+      }
+
+      .rename-button {
+        margin-bottom: 0;
+        padding: 0.25rem 0.5rem;
+        font-size: 0.8rem;
+      }
+
+      .screenshot-meta {
+        font-size: 0.8rem;
+        color: #666;
+      }
     </style>
   </head>
   <body>
@@ -190,7 +230,21 @@
       }
       const frameTokens = new Map();
       const knownComments = new Set();
-      const knownScreenshots = new Set();
+      const screenshotCards = new Map();
+      const likedCache = new Set(
+        JSON.parse(localStorage.getItem('screenshotLikes') ?? '[]')
+      );
+
+      const searchParams = new URLSearchParams(window.location.search);
+      const adminTokenFromQuery = searchParams.get('adminToken');
+      if (adminTokenFromQuery) {
+        localStorage.setItem('screenshotAdminToken', adminTokenFromQuery);
+      }
+      const adminToken =
+        adminTokenFromQuery ??
+        localStorage.getItem('screenshotAdminToken') ??
+        '';
+
       updateScreenshotEmptyState();
 
       nameForm.addEventListener('submit', async event => {
@@ -274,6 +328,8 @@
             requestAnimationFrame(() => refreshFrame(cameraId, updatedAt));
           } else if (payload?.type === 'screenshot:new' && payload.screenshot) {
             renderScreenshot(payload.screenshot, true);
+          } else if (payload?.type === 'screenshot:update' && payload.screenshot) {
+            renderScreenshot(payload.screenshot, false);
           } else if (payload?.type === 'comment:new' && payload.comment) {
             appendComment(payload.comment, true);
           }
@@ -414,57 +470,223 @@
           return;
         }
 
-        if (knownScreenshots.has(entry.id)) {
-          return;
-        }
-
         if (!(screenshotGallery instanceof HTMLElement)) {
           return;
         }
 
-        knownScreenshots.add(entry.id);
+        const cacheBuster =
+          typeof entry.timestamp === 'number'
+            ? `?t=${encodeURIComponent(entry.timestamp)}`
+            : '';
 
-        const figure = document.createElement('figure');
-        figure.className = 'screenshot-card';
+        let card = screenshotCards.get(entry.id);
+        const isNew = !card;
+
+        if (isNew) {
+          card = document.createElement('figure');
+          card.className = 'screenshot-card';
+          card.id = `screenshot-${entry.id}`;
+
+          const header = document.createElement('div');
+          header.className = 'screenshot-header';
+
+          const title = document.createElement('h3');
+          title.className = 'screenshot-title';
+          header.append(title);
+
+          const renameButton = document.createElement('button');
+          renameButton.type = 'button';
+          renameButton.className = 'rename-button';
+          renameButton.textContent = 'Rename';
+          renameButton.addEventListener('click', () => promptRename(entry.id));
+          header.append(renameButton);
+
+          card.append(header);
+
+          const image = document.createElement('img');
+          card.append(image);
+
+          const timeEl = document.createElement('time');
+          card.append(timeEl);
+
+          const link = document.createElement('a');
+          link.target = '_blank';
+          link.rel = 'noopener';
+          link.textContent = 'Open full size';
+          card.append(link);
+
+          const metaSpan = document.createElement('span');
+          metaSpan.className = 'screenshot-meta';
+          card.append(metaSpan);
+
+          const actions = document.createElement('div');
+          actions.className = 'screenshot-actions';
+
+          const likeButton = document.createElement('button');
+          likeButton.type = 'button';
+          likeButton.className = 'like-button';
+          likeButton.addEventListener('click', () =>
+            handleLike(entry.id, likeButton)
+          );
+          actions.append(likeButton);
+
+          card.append(actions);
+
+          if (prepend) {
+            screenshotGallery.prepend(card);
+          } else {
+            screenshotGallery.append(card);
+          }
+
+          screenshotCards.set(entry.id, card);
+        }
 
         const capturedAt = new Date(
           typeof entry.timestamp === 'number' ? entry.timestamp : Date.now()
         );
-        const timeLabel = capturedAt.toLocaleString();
 
-        const image = document.createElement('img');
-        image.src = entry.url;
-        image.alt = `Screenshot captured ${timeLabel}`;
-        figure.append(image);
-
-        const timeEl = document.createElement('time');
-        timeEl.dateTime = capturedAt.toISOString();
-        timeEl.textContent = timeLabel;
-        figure.append(timeEl);
-
-        const link = document.createElement('a');
-        link.href = entry.url;
-        link.target = '_blank';
-        link.rel = 'noopener';
-        link.textContent = 'Open full size';
-        figure.append(link);
-
-        if (typeof entry.size === 'number') {
-          const sizeInfo = document.createElement('span');
-          sizeInfo.style.fontSize = '0.8rem';
-          sizeInfo.style.color = '#666';
-          const kilobytes = Math.max(1, Math.round(entry.size / 1024));
-          sizeInfo.textContent = `${kilobytes.toLocaleString()} KB`;
-          figure.append(sizeInfo);
+        const titleEl = card.querySelector('.screenshot-title');
+        if (titleEl) {
+          titleEl.textContent = entry.name?.trim() || 'Untitled screenshot';
         }
 
-        if (prepend) {
-          screenshotGallery.prepend(figure);
-        } else {
-          screenshotGallery.append(figure);
+        const renameButton = card.querySelector('.rename-button');
+        if (renameButton) {
+          renameButton.hidden = !adminToken;
         }
+
+        const imageEl = card.querySelector('img');
+        if (imageEl) {
+          imageEl.src = `${entry.url}${cacheBuster}`;
+          imageEl.alt = `${
+            titleEl?.textContent ?? 'Screenshot'
+          } — captured ${capturedAt.toLocaleString()}`;
+        }
+
+        const timeEl = card.querySelector('time');
+        if (timeEl) {
+          timeEl.dateTime = capturedAt.toISOString();
+          timeEl.textContent = capturedAt.toLocaleString();
+        }
+
+        const linkEl = card.querySelector('a');
+        if (linkEl) {
+          linkEl.href = entry.url;
+        }
+
+        const metaSpan = card.querySelector('.screenshot-meta');
+        if (metaSpan) {
+          if (typeof entry.size === 'number') {
+            const kilobytes = Math.max(1, Math.round(entry.size / 1024));
+            metaSpan.textContent = `${kilobytes.toLocaleString()} KB`;
+          } else {
+            metaSpan.textContent = '';
+          }
+        }
+
+        updateScreenshotLikes(entry.id, entry.likes ?? 0);
 
         updateScreenshotEmptyState();
+      }
+
+      function handleLike(id, button) {
+        if (likedCache.has(id)) {
+          return;
+        }
+
+        button.disabled = true;
+
+        fetch(`/screenshots/${encodeURIComponent(id)}/like`, {
+          method: 'POST'
+        })
+          .then(response => {
+            if (!response.ok) {
+              return response.text().then(text => {
+                throw new Error(text || 'Failed to like screenshot');
+              });
+            }
+            return response.json();
+          })
+          .then(data => {
+            const likes =
+              typeof data?.likes === 'number' ? data.likes : undefined;
+            if (likes !== undefined) {
+              likedCache.add(id);
+              localStorage.setItem(
+                'screenshotLikes',
+                JSON.stringify([...likedCache])
+              );
+              updateScreenshotLikes(id, likes);
+            }
+          })
+          .catch(error => {
+            console.error('Failed to like screenshot', error);
+            alert('いいねの送信に失敗しました。しばらくしてから再試行してください。');
+          })
+          .finally(() => {
+            button.disabled = likedCache.has(id);
+          });
+      }
+
+      function updateScreenshotLikes(id, likes) {
+        const card = screenshotCards.get(id);
+        if (!card) {
+          return;
+        }
+
+        const likeButton = card.querySelector('.like-button');
+        if (likeButton) {
+          likeButton.textContent = `❤️ ${likes}`;
+          likeButton.disabled = likedCache.has(id);
+        }
+      }
+
+      function promptRename(id) {
+        if (!adminToken) {
+          alert(
+            '管理者トークンが設定されていません。URL に ?adminToken=YOUR_TOKEN を付けてアクセスしてください。'
+          );
+          return;
+        }
+
+        const card = screenshotCards.get(id);
+        const currentTitle =
+          card?.querySelector('.screenshot-title')?.textContent ?? '';
+        const next = prompt('スクリーンショットの名前を入力してください。', currentTitle);
+
+        if (next === null) {
+          return;
+        }
+
+        const trimmed = next.trim();
+        if (!trimmed) {
+          alert('名前は空にできません。');
+          return;
+        }
+
+        fetch(`/screenshots/${encodeURIComponent(id)}/name`, {
+          method: 'PATCH',
+          headers: {
+            'Content-Type': 'application/json',
+            'x-admin-token': adminToken
+          },
+          body: JSON.stringify({ name: trimmed })
+        })
+          .then(response => {
+            if (!response.ok) {
+              return response.text().then(text => {
+                throw new Error(text || 'Failed to update screenshot name');
+              });
+            }
+            return response.json();
+          })
+          .then(updated => {
+            renderScreenshot(updated, false);
+          })
+          .catch(error => {
+            console.error('Failed to update screenshot name', error);
+            alert('名前の更新に失敗しました。');
+          });
       }
 
       function updateScreenshotEmptyState() {
@@ -472,7 +694,7 @@
           return;
         }
 
-        screenshotEmpty.hidden = knownScreenshots.size > 0;
+        screenshotEmpty.hidden = screenshotCards.size > 0;
       }
 
       function sanitize(value) {

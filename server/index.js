@@ -14,6 +14,7 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const uploadsRoot = path.join(__dirname, 'uploads');
 const screenshotsDir = path.join(uploadsRoot, 'screenshots');
+const adminToken = process.env.SCREENSHOT_ADMIN_TOKEN ?? '';
 
 app.use(cors());
 app.use(express.json({ limit: '2mb' }));
@@ -31,27 +32,34 @@ void (async () => {
   try {
     await fs.mkdir(screenshotsDir, { recursive: true });
     const files = await fs.readdir(screenshotsDir);
-    const entries = [];
+    const imageFiles = files.filter(file =>
+      file.match(/\.(png|jpe?g)$/i)
+    );
 
-    for (const file of files) {
+    for (const file of imageFiles) {
       const filePath = path.join(screenshotsDir, file);
-      const stats = await fs.stat(filePath);
-      if (!stats.isFile()) {
+      const stats = await fs.stat(filePath).catch(() => null);
+      if (!stats) {
         continue;
       }
 
       const id = path.parse(file).name;
-      entries.push({
+      const metadata = await readScreenshotMetadata(id);
+
+      screenshotEntries.push({
         id,
+        fileName: file,
         url: `/uploads/screenshots/${file}`,
-        timestamp: stats.mtimeMs,
-        contentType: file.endsWith('.png') ? 'image/png' : 'image/jpeg',
-        size: stats.size
+        timestamp: metadata?.timestamp ?? stats.mtimeMs,
+        contentType:
+          metadata?.contentType ?? (file.toLowerCase().endsWith('.png') ? 'image/png' : 'image/jpeg'),
+        size: metadata?.size ?? stats.size,
+        name: metadata?.name ?? '',
+        likes: metadata?.likes ?? 0
       });
     }
 
-    entries.sort((a, b) => b.timestamp - a.timestamp);
-    screenshotEntries.push(...entries);
+    screenshotEntries.sort((a, b) => b.timestamp - a.timestamp);
   } catch (error) {
     console.warn('[RealtimeNameServer] Failed to initialize screenshot storage.', error);
   }
@@ -209,11 +217,16 @@ app.post('/screenshots', screenshotUploadMiddleware, async (req, res) => {
 
     const entry = {
       id,
+      fileName,
       url: `/uploads/screenshots/${fileName}`,
       timestamp,
       contentType: extension === '.png' ? 'image/png' : 'image/jpeg',
-      size: req.body.length
+      size: req.body.length,
+      name: '',
+      likes: 0
     };
+
+    await persistScreenshotMetadata(entry);
 
     screenshotEntries.unshift(entry);
     if (screenshotEntries.length > 200) {
@@ -226,6 +239,52 @@ app.post('/screenshots', screenshotUploadMiddleware, async (req, res) => {
     console.error('[RealtimeNameServer] Failed to store screenshot.', error);
     res.status(500).json({ error: 'Failed to store screenshot.' });
   }
+});
+
+app.patch('/screenshots/:id/name', async (req, res) => {
+  const token = req.get('x-admin-token') ?? req.query.token ?? '';
+  if (!adminToken) {
+    return res
+      .status(403)
+      .json({ error: 'Admin token is not configured on the server.' });
+  }
+
+  if (token !== adminToken) {
+    return res.status(403).json({ error: 'Invalid admin token.' });
+  }
+
+  const entry = getScreenshot(req.params.id);
+  if (!entry) {
+    return res.status(404).json({ error: 'Screenshot not found.' });
+  }
+
+  const { name } = req.body ?? {};
+  if (typeof name !== 'string' || !name.trim()) {
+    return res.status(400).json({ error: 'Name must be a non-empty string.' });
+  }
+
+  entry.name = name.trim();
+  await persistScreenshotMetadata(entry).catch(error => {
+    console.error('[RealtimeNameServer] Failed to persist screenshot name.', error);
+  });
+
+  broadcastScreenshotUpdate(entry);
+  res.json(entry);
+});
+
+app.post('/screenshots/:id/like', async (req, res) => {
+  const entry = getScreenshot(req.params.id);
+  if (!entry) {
+    return res.status(404).json({ error: 'Screenshot not found.' });
+  }
+
+  entry.likes = (entry.likes ?? 0) + 1;
+  await persistScreenshotMetadata(entry).catch(error => {
+    console.error('[RealtimeNameServer] Failed to persist screenshot like.', error);
+  });
+
+  broadcastScreenshotUpdate(entry);
+  res.json({ id: entry.id, likes: entry.likes });
 });
 
 const port = process.env.PORT ?? 3000;
@@ -260,6 +319,11 @@ function setFrame(cameraId, payload) {
 
 function getFrameRecord(cameraId) {
   return frames.get(cameraId) ?? null;
+}
+
+function getScreenshot(id) {
+  const index = screenshotEntries.findIndex(entry => entry.id === id);
+  return index >= 0 ? screenshotEntries[index] : null;
 }
 
 function normalizeCameraId(value) {
@@ -317,5 +381,45 @@ function broadcastScreenshot(screenshot) {
     if (client.readyState === WebSocket.OPEN) {
       client.send(payload);
     }
+  }
+}
+
+function broadcastScreenshotUpdate(screenshot) {
+  if (!wss.clients.size) {
+    return;
+  }
+
+  const payload = JSON.stringify({ type: 'screenshot:update', screenshot });
+
+  for (const client of wss.clients) {
+    if (client.readyState === WebSocket.OPEN) {
+      client.send(payload);
+    }
+  }
+}
+
+async function persistScreenshotMetadata(entry) {
+  const metadata = {
+    id: entry.id,
+    fileName: entry.fileName ?? `${entry.id}.jpg`,
+    timestamp: entry.timestamp,
+    contentType: entry.contentType,
+    size: entry.size,
+    name: entry.name ?? '',
+    likes: entry.likes ?? 0
+  };
+
+  const metadataPath = path.join(screenshotsDir, `${entry.id}.json`);
+  await fs.writeFile(metadataPath, JSON.stringify(metadata, null, 2), 'utf8');
+}
+
+async function readScreenshotMetadata(id) {
+  const metadataPath = path.join(screenshotsDir, `${id}.json`);
+
+  try {
+    const raw = await fs.readFile(metadataPath, 'utf8');
+    return JSON.parse(raw);
+  } catch (error) {
+    return null;
   }
 }
