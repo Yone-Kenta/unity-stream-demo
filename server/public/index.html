@@ -20,8 +20,13 @@
 
       label,
       input,
-      button,
       textarea {
+        display: block;
+        width: 100%;
+        margin-bottom: 0.75rem;
+      }
+
+      form button {
         display: block;
         width: 100%;
         margin-bottom: 0.75rem;
@@ -96,6 +101,12 @@
         color: #555;
       }
 
+      .rename-button {
+        margin-bottom: 0;
+        padding: 0.35rem 0.75rem;
+        width: auto;
+      }
+
       .screenshot-card a {
         font-size: 0.85rem;
         color: #0a66c2;
@@ -128,6 +139,7 @@
       .screenshot-actions button {
         margin-bottom: 0;
         padding: 0.35rem 0.75rem;
+        width: auto;
       }
 
       .like-button[disabled] {
@@ -235,15 +247,18 @@
         JSON.parse(localStorage.getItem('screenshotLikes') ?? '[]')
       );
 
-      const searchParams = new URLSearchParams(window.location.search);
-      const adminTokenFromQuery = searchParams.get('adminToken');
-      if (adminTokenFromQuery) {
-        localStorage.setItem('screenshotAdminToken', adminTokenFromQuery);
-      }
-      const adminToken =
-        adminTokenFromQuery ??
-        localStorage.getItem('screenshotAdminToken') ??
-        '';
+        const searchParams = new URLSearchParams(window.location.search);
+        const adminTokenFromQueryRaw = searchParams.get('adminToken');
+        const adminTokenFromQuery = adminTokenFromQueryRaw
+          ? adminTokenFromQueryRaw.trim()
+          : '';
+        if (adminTokenFromQuery) {
+          localStorage.setItem('screenshotAdminToken', adminTokenFromQuery);
+        }
+        const storedAdminToken = (
+          localStorage.getItem('screenshotAdminToken') ?? ''
+        ).trim();
+        const adminToken = adminTokenFromQuery || storedAdminToken;
 
       updateScreenshotEmptyState();
 
@@ -494,13 +509,6 @@
           title.className = 'screenshot-title';
           header.append(title);
 
-          const renameButton = document.createElement('button');
-          renameButton.type = 'button';
-          renameButton.className = 'rename-button';
-          renameButton.textContent = 'Rename';
-          renameButton.addEventListener('click', () => promptRename(entry.id));
-          header.append(renameButton);
-
           card.append(header);
 
           const image = document.createElement('img');
@@ -550,9 +558,23 @@
           titleEl.textContent = entry.name?.trim() || 'Untitled screenshot';
         }
 
-        const renameButton = card.querySelector('.rename-button');
-        if (renameButton) {
-          renameButton.hidden = !adminToken;
+        let renameButton = card.querySelector('.rename-button');
+        const header = card.querySelector('.screenshot-header');
+        if (adminToken && header) {
+          if (!renameButton) {
+            renameButton = document.createElement('button');
+            renameButton.type = 'button';
+            renameButton.className = 'rename-button';
+            renameButton.textContent = 'Rename';
+            renameButton.addEventListener('click', () =>
+              promptRename(entry.id)
+            );
+            header.append(renameButton);
+          }
+          renameButton.hidden = false;
+        } else if (renameButton) {
+          renameButton.remove();
+          renameButton = null;
         }
 
         const imageEl = card.querySelector('img');
