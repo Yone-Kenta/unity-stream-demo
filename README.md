@@ -41,10 +41,15 @@ This Unity project streams the main camera to a Node.js companion server and cap
 
 > **Render/Railway deployments:** `server/uploads` is ephemeral. Screenshots live as long as the instance stays awake; redeploys or restarts clear the stored images and metadata.
 
-## Screenshot Likes
+## Screenshot Names & Likes
 
-- Each screenshot tracks a like counter.
-- Visitors can press the ❤ button once per browser session (tracked via `localStorage`) to send a like.
+- Each screenshot stores a title and like counter.
+- Anyone can press the ❤ button once per browser session (tracked via `localStorage`) to send a like.
+- Administrators can rename screenshots:
+  1. Set `SCREENSHOT_ADMIN_TOKEN=<your-secret>` in the server environment (Render の Environment 変数など)。
+  2. ブラウザで `?adminToken=<your-secret>` を付けてページを開くと、各カードに **Rename** ボタンが表示されます。
+  3. Rename を押して新しいタイトルを入力すると、保存されて全ユーザーに即時反映されます。
+
 
 ## Using the Web UI
 

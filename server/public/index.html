@@ -1,5 +1,5 @@
 <!doctype html>
-<html lang="en">
+<html lang="ja">
   <head>
     <meta charset="utf-8" />
     <title>Unity Name Sync Demo</title>
@@ -89,13 +89,6 @@
         gap: 0.5rem;
       }
 
-      .screenshot-card img {
-        width: 100%;
-        height: auto;
-        border-radius: 0.35rem;
-        background: #111;
-      }
-
       .screenshot-card time {
         font-size: 0.85rem;
         color: #555;
@@ -122,6 +115,13 @@
         margin: 0;
         font-size: 1rem;
         font-weight: 600;
+      }
+
+      .rename-button {
+        margin: 0;
+        padding: 0.3rem 0.6rem;
+        font-size: 0.85rem;
+        width: auto;
       }
 
       .screenshot-actions {
@@ -163,12 +163,7 @@
         The latest frame from the Unity main camera will appear below when the
         streamer is running.
       </p>
-      <img
-        id="cameraFrame"
-        alt="Unity main camera stream"
-        src=""
-        hidden
-      />
+      <img id="cameraFrame" alt="Unity main camera stream" src="" hidden />
     </section>
 
     <section aria-label="Screenshot gallery">
@@ -185,12 +180,7 @@
         This feed shows the wide camera that keeps the entire star field in view.
         It updates whenever the Unity overview streamer sends a new frame.
       </p>
-      <img
-        id="overviewFrame"
-        alt="Unity star field overview stream"
-        src=""
-        hidden
-      />
+      <img id="overviewFrame" alt="Unity star field overview stream" src="" hidden />
     </section>
 
     <section aria-label="Comments">
@@ -234,6 +224,16 @@
       const likedCache = new Set(
         JSON.parse(localStorage.getItem('screenshotLikes') ?? '[]')
       );
+
+      const searchParams = new URLSearchParams(window.location.search);
+      const adminToken = (() => {
+        const fromQuery = (searchParams.get('adminToken') ?? '').trim();
+        if (fromQuery) {
+          localStorage.setItem('screenshotAdminToken', fromQuery);
+          return fromQuery;
+        }
+        return (localStorage.getItem('screenshotAdminToken') ?? '').trim();
+      })();
 
       updateScreenshotEmptyState();
 
@@ -533,6 +533,25 @@
           titleEl.textContent = entry.name?.trim() || 'Untitled screenshot';
         }
 
+        let renameButton = card.querySelector('.rename-button');
+        const header = card.querySelector('.screenshot-header');
+        if (adminToken && header) {
+          if (!renameButton) {
+            renameButton = document.createElement('button');
+            renameButton.type = 'button';
+            renameButton.className = 'rename-button';
+            renameButton.textContent = 'Rename';
+            renameButton.addEventListener('click', () =>
+              promptRename(entry.id)
+            );
+            header.append(renameButton);
+          }
+          renameButton.hidden = false;
+        } else if (renameButton) {
+          renameButton.remove();
+          renameButton = null;
+        }
+
         const imageEl = card.querySelector('img');
         if (imageEl) {
           imageEl.src = `${entry.url}${cacheBuster}`;
@@ -617,6 +636,54 @@
           likeButton.textContent = `❤️ ${likes}`;
           likeButton.disabled = likedCache.has(id);
         }
+      }
+
+      function promptRename(id) {
+        if (!adminToken) {
+          alert(
+            '管理者トークンが指定されていません。URL に ?adminToken=YOUR_TOKEN を付けてアクセスしてください。'
+          );
+          return;
+        }
+
+        const card = screenshotCards.get(id);
+        const currentTitle =
+          card?.querySelector('.screenshot-title')?.textContent ?? '';
+        const next = prompt('スクリーンショットの名前を入力してください。', currentTitle);
+
+        if (next === null) {
+          return;
+        }
+
+        const trimmed = next.trim();
+        if (!trimmed) {
+          alert('名前は空にできません。');
+          return;
+        }
+
+        fetch(`/screenshots/${encodeURIComponent(id)}/name`, {
+          method: 'PATCH',
+          headers: {
+            'Content-Type': 'application/json',
+            'x-admin-token': adminToken
+          },
+          body: JSON.stringify({ name: trimmed })
+        })
+          .then(response => {
+            if (!response.ok) {
+              return response.text().then(text => {
+                throw new Error(text || 'Failed to update screenshot name');
+              });
+            }
+            return response.json();
+          })
+          .then(updated => {
+            renderScreenshot(updated, false);
+          })
+          .catch(error => {
+            console.error('Failed to update screenshot name', error);
+            alert('名前の更新に失敗しました。');
+          });
       }
 
       function updateScreenshotEmptyState() {

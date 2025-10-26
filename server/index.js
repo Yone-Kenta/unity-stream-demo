@@ -26,6 +26,7 @@ const defaultCameraId = 'main';
 let commentSequence = 0;
 const comments = [];
 const screenshotEntries = [];
+const adminToken = process.env.SCREENSHOT_ADMIN_TOKEN?.trim() ?? '';
 
 void (async () => {
   try {
@@ -238,6 +239,44 @@ app.post('/screenshots', screenshotUploadMiddleware, async (req, res) => {
     console.error('[RealtimeNameServer] Failed to store screenshot.', error);
     res.status(500).json({ error: 'Failed to store screenshot.' });
   }
+});
+
+app.patch('/screenshots/:id/name', async (req, res) => {
+  const token = (req.get('x-admin-token') ?? req.query.token ?? '')
+    .toString()
+    .trim();
+
+  if (!adminToken) {
+    return res
+      .status(403)
+      .json({ error: 'Admin token is not configured on the server.' });
+  }
+
+  if (token !== adminToken) {
+    return res.status(403).json({ error: 'Invalid admin token.' });
+  }
+
+  const entry = getScreenshot(req.params.id);
+  if (!entry) {
+    return res.status(404).json({ error: 'Screenshot not found.' });
+  }
+
+  const { name } = req.body ?? {};
+  const trimmed =
+    typeof name === 'string' ? name.trim().slice(0, 120) : '';
+
+  if (!trimmed) {
+    return res.status(400).json({ error: 'Name must be a non-empty string.' });
+  }
+
+  entry.name = trimmed;
+
+  await persistScreenshotMetadata(entry).catch(error => {
+    console.error('[RealtimeNameServer] Failed to persist screenshot name.', error);
+  });
+
+  broadcastScreenshotUpdate(entry);
+  res.json(entry);
 });
 
 app.post('/screenshots/:id/like', async (req, res) => {
