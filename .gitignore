@@ -1,0 +1,12 @@
+server/uploads/
+!server/uploads/.gitkeep
+
+# Unity generated folders
+Library/
+Temp/
+Logs/
+obj/
+UserSettings/
+server/uploads/
+!server/uploads/.gitkeep
+

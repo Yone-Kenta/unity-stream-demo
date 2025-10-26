@@ -1,0 +1,488 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Unity Name Sync Demo</title>
+    <style>
+      body {
+        font-family: system-ui, sans-serif;
+        padding: 2rem;
+        margin: 0 auto;
+        max-width: 60rem;
+      }
+
+      img {
+        width: 100%;
+        height: auto;
+        border-radius: 0.5rem;
+        background: #111;
+      }
+
+      label,
+      input,
+      button,
+      textarea {
+        display: block;
+        width: 100%;
+        margin-bottom: 0.75rem;
+      }
+
+      #currentName {
+        font-weight: bold;
+      }
+
+      textarea {
+        resize: vertical;
+        min-height: 6rem;
+        font-family: inherit;
+        padding: 0.5rem;
+      }
+
+      button {
+        cursor: pointer;
+      }
+
+      ul {
+        list-style: none;
+        padding: 0;
+      }
+
+      .comment-item {
+        padding: 0.75rem 1rem;
+        border: 1px solid #ddd;
+        border-radius: 0.5rem;
+        margin-bottom: 0.75rem;
+        background: rgba(0, 0, 0, 0.02);
+      }
+
+      .comment-item strong {
+        display: block;
+        margin-bottom: 0.25rem;
+      }
+
+      .comment-item small {
+        display: block;
+        margin-top: 0.5rem;
+        color: #666;
+        font-size: 0.85rem;
+      }
+
+      .gallery {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(14rem, 1fr));
+        gap: 1rem;
+        margin-top: 1rem;
+      }
+
+      .screenshot-card {
+        border: 1px solid #ddd;
+        border-radius: 0.5rem;
+        background: rgba(0, 0, 0, 0.03);
+        padding: 0.75rem;
+        display: flex;
+        flex-direction: column;
+        gap: 0.5rem;
+      }
+
+      .screenshot-card img {
+        width: 100%;
+        height: auto;
+        border-radius: 0.35rem;
+        background: #111;
+      }
+
+      .screenshot-card time {
+        font-size: 0.85rem;
+        color: #555;
+      }
+
+      .screenshot-card a {
+        font-size: 0.85rem;
+        color: #0a66c2;
+        text-decoration: none;
+      }
+
+      .screenshot-card a:hover {
+        text-decoration: underline;
+      }
+    </style>
+  </head>
+  <body>
+    <section aria-label="Realtime status">
+      <p>Current name: <span id="currentName">Loading…</span></p>
+      <form id="nameForm">
+        <label for="nameInput">New name</label>
+        <input id="nameInput" name="name" placeholder="Enter a name" required />
+        <button type="submit">Send to Unity</button>
+      </form>
+    </section>
+
+    <section aria-label="Main camera feed">
+      <h2>Main Camera</h2>
+      <p>
+        The latest frame from the Unity main camera will appear below when the
+        streamer is running.
+      </p>
+      <img
+        id="cameraFrame"
+        alt="Unity main camera stream"
+        src=""
+        hidden
+      />
+    </section>
+
+    <section aria-label="Screenshot gallery">
+      <h2>Screenshot Gallery</h2>
+      <p id="screenshotEmpty">
+        No screenshots yet. Press <kbd>S</kbd> in Unity to capture the current view.
+      </p>
+      <div id="screenshotGallery" class="gallery" aria-live="polite"></div>
+    </section>
+
+    <section aria-label="Star field overview camera feed">
+      <h2>Star Field Overview</h2>
+      <p>
+        This feed shows the wide camera that keeps the entire star field in view.
+        It updates whenever the Unity overview streamer sends a new frame.
+      </p>
+      <img
+        id="overviewFrame"
+        alt="Unity star field overview stream"
+        src=""
+        hidden
+      />
+    </section>
+
+    <section aria-label="Comments">
+      <h2>Comments</h2>
+      <form id="commentForm">
+        <label for="commentInput">Add a comment</label>
+        <textarea
+          id="commentInput"
+          name="comment"
+          placeholder="Share your thoughts…"
+          required
+        ></textarea>
+        <button type="submit">Post</button>
+      </form>
+      <ul id="commentList" aria-live="polite"></ul>
+    </section>
+
+    <script type="module">
+      const nameForm = document.getElementById('nameForm');
+      const nameInput = document.getElementById('nameInput');
+      const currentName = document.getElementById('currentName');
+      const cameraFrame = document.getElementById('cameraFrame');
+      const overviewFrame = document.getElementById('overviewFrame');
+      const commentForm = document.getElementById('commentForm');
+      const commentInput = document.getElementById('commentInput');
+      const commentList = document.getElementById('commentList');
+      const screenshotGallery = document.getElementById('screenshotGallery');
+      const screenshotEmpty = document.getElementById('screenshotEmpty');
+      const protocol = window.location.protocol === 'https:' ? 'wss' : 'ws';
+      const ws = new WebSocket(`${protocol}://${window.location.host}/ws`);
+      const frameElements = new Map();
+      if (cameraFrame instanceof HTMLImageElement) {
+        frameElements.set('main', cameraFrame);
+      }
+      if (overviewFrame instanceof HTMLImageElement) {
+        frameElements.set('overview', overviewFrame);
+      }
+      const frameTokens = new Map();
+      const knownComments = new Set();
+      const knownScreenshots = new Set();
+      updateScreenshotEmptyState();
+
+      nameForm.addEventListener('submit', async event => {
+        event.preventDefault();
+        const name = nameInput.value.trim();
+
+        if (!name) {
+          return;
+        }
+
+        try {
+          const response = await fetch('/name', {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json'
+            },
+            body: JSON.stringify({ name })
+          });
+
+          if (!response.ok) {
+            const error = await response.json().catch(() => ({}));
+            alert(error.error ?? 'Failed to update name');
+          } else {
+            nameInput.value = '';
+          }
+        } catch (error) {
+          console.error(error);
+          alert('Network error while sending name');
+        }
+      });
+
+      commentForm.addEventListener('submit', async event => {
+        event.preventDefault();
+        const message = commentInput.value.trim();
+
+        if (!message) {
+          return;
+        }
+
+        try {
+          const response = await fetch('/comments', {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json'
+            },
+            body: JSON.stringify({ message })
+          });
+
+          if (!response.ok) {
+            const error = await response.json().catch(() => ({}));
+            alert(error.error ?? 'Failed to post comment');
+          } else {
+            const comment = await response.json().catch(() => null);
+            if (comment) {
+              appendComment(comment, false);
+            }
+            commentInput.value = '';
+          }
+        } catch (error) {
+          console.error(error);
+          alert('Network error while posting comment');
+        }
+      });
+
+      ws.addEventListener('open', () => {
+        console.info('Connected to realtime updates');
+      });
+
+      ws.addEventListener('message', event => {
+        try {
+          const payload = JSON.parse(event.data);
+          if (payload?.type === 'name:update') {
+            currentName.textContent = payload.name || '(empty)';
+          } else if (payload?.type === 'frame:update') {
+            const cameraId =
+              typeof payload.cameraId === 'string' && payload.cameraId
+                ? payload.cameraId
+                : 'main';
+            const updatedAt =
+              typeof payload.updatedAt === 'number' ? payload.updatedAt : Date.now();
+            requestAnimationFrame(() => refreshFrame(cameraId, updatedAt));
+          } else if (payload?.type === 'screenshot:new' && payload.screenshot) {
+            renderScreenshot(payload.screenshot, true);
+          } else if (payload?.type === 'comment:new' && payload.comment) {
+            appendComment(payload.comment, true);
+          }
+        } catch (error) {
+          console.error('Failed to parse message', error);
+        }
+      });
+
+      ws.addEventListener('close', () => {
+        console.warn('Realtime connection closed');
+      });
+
+      ws.addEventListener('error', error => {
+        console.error('Realtime connection error', error);
+      });
+
+      fetch('/name')
+        .then(res => res.json())
+        .then(data => {
+          currentName.textContent = data?.name || '(empty)';
+        })
+        .catch(() => {
+          currentName.textContent = '(unknown)';
+        });
+
+      fetch('/frames')
+        .then(res => (res.ok ? res.json() : []))
+        .then(items => {
+          if (!Array.isArray(items)) {
+            return;
+          }
+
+          for (const item of items) {
+            const cameraId =
+              typeof item?.cameraId === 'string' && item.cameraId
+                ? item.cameraId
+                : 'main';
+            const updatedAt =
+              typeof item?.updatedAt === 'number' ? item.updatedAt : Date.now();
+            refreshFrame(cameraId, updatedAt);
+          }
+        })
+        .catch(error => {
+          console.warn('Failed to load camera list', error);
+        });
+
+      fetch('/screenshots')
+        .then(res => (res.ok ? res.json() : []))
+        .then(items => {
+          if (!Array.isArray(items)) {
+            return;
+          }
+
+          for (const screenshot of items) {
+            renderScreenshot(screenshot, false);
+          }
+        })
+        .catch(error => {
+          console.warn('Failed to load screenshots', error);
+        });
+
+      fetch('/comments')
+        .then(res => (res.ok ? res.json() : []))
+        .then(items => {
+          if (!Array.isArray(items)) {
+            return;
+          }
+
+          for (const comment of items) {
+            appendComment(comment, false);
+          }
+        })
+        .catch(error => {
+          console.warn('Failed to load comments', error);
+        });
+
+      function refreshFrame(cameraId = 'main', timestamp = Date.now()) {
+        const element = frameElements.get(cameraId);
+        if (!element) {
+          console.warn(`No image element is registered for camera "${cameraId}".`);
+          return;
+        }
+
+        const previousToken = frameTokens.get(cameraId);
+        if (previousToken === timestamp) {
+          return;
+        }
+
+        frameTokens.set(cameraId, timestamp);
+        const basePath =
+          cameraId === 'main'
+            ? '/frame'
+            : `/frame/${encodeURIComponent(cameraId)}`;
+        const cacheBuster = `?t=${encodeURIComponent(timestamp)}`;
+        element.src = `${basePath}${cacheBuster}`;
+        element.hidden = false;
+      }
+
+      for (const element of frameElements.values()) {
+        element.addEventListener('error', () => {
+          element.hidden = true;
+        });
+      }
+
+      function appendComment(comment, prepend) {
+        if (!comment?.id || !comment.message) {
+          return;
+        }
+
+        if (knownComments.has(comment.id)) {
+          return;
+        }
+
+        knownComments.add(comment.id);
+
+        const li = document.createElement('li');
+        li.className = 'comment-item';
+
+        const author = sanitize(comment.author ?? 'Anonymous');
+        const message = sanitize(comment.message);
+        const timestamp = new Date(comment.timestamp ?? Date.now()).toLocaleString();
+
+        li.innerHTML = `
+          <strong>${author}</strong>
+          <span>${message.replace(/\n/g, '<br/>')}</span>
+          <small>${timestamp}</small>
+        `;
+
+        if (prepend) {
+          commentList.prepend(li);
+        } else {
+          commentList.append(li);
+        }
+      }
+
+      function renderScreenshot(entry, prepend) {
+        if (!entry?.id || !entry.url) {
+          return;
+        }
+
+        if (knownScreenshots.has(entry.id)) {
+          return;
+        }
+
+        if (!(screenshotGallery instanceof HTMLElement)) {
+          return;
+        }
+
+        knownScreenshots.add(entry.id);
+
+        const figure = document.createElement('figure');
+        figure.className = 'screenshot-card';
+
+        const capturedAt = new Date(
+          typeof entry.timestamp === 'number' ? entry.timestamp : Date.now()
+        );
+        const timeLabel = capturedAt.toLocaleString();
+
+        const image = document.createElement('img');
+        image.src = entry.url;
+        image.alt = `Screenshot captured ${timeLabel}`;
+        figure.append(image);
+
+        const timeEl = document.createElement('time');
+        timeEl.dateTime = capturedAt.toISOString();
+        timeEl.textContent = timeLabel;
+        figure.append(timeEl);
+
+        const link = document.createElement('a');
+        link.href = entry.url;
+        link.target = '_blank';
+        link.rel = 'noopener';
+        link.textContent = 'Open full size';
+        figure.append(link);
+
+        if (typeof entry.size === 'number') {
+          const sizeInfo = document.createElement('span');
+          sizeInfo.style.fontSize = '0.8rem';
+          sizeInfo.style.color = '#666';
+          const kilobytes = Math.max(1, Math.round(entry.size / 1024));
+          sizeInfo.textContent = `${kilobytes.toLocaleString()} KB`;
+          figure.append(sizeInfo);
+        }
+
+        if (prepend) {
+          screenshotGallery.prepend(figure);
+        } else {
+          screenshotGallery.append(figure);
+        }
+
+        updateScreenshotEmptyState();
+      }
+
+      function updateScreenshotEmptyState() {
+        if (!(screenshotEmpty instanceof HTMLElement)) {
+          return;
+        }
+
+        screenshotEmpty.hidden = knownScreenshots.size > 0;
+      }
+
+      function sanitize(value) {
+        return String(value)
+          .replace(/&/g, '&amp;')
+          .replace(/</g, '&lt;')
+          .replace(/>/g, '&gt;')
+          .replace(/"/g, '&quot;')
+          .replace(/'/g, '&#39;');
+      }
+    </script>
+  </body>
+</html>
