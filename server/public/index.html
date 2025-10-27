@@ -226,14 +226,7 @@
       );
 
       const searchParams = new URLSearchParams(window.location.search);
-      const adminToken = (() => {
-        const fromQuery = (searchParams.get('adminToken') ?? '').trim();
-        if (fromQuery) {
-          localStorage.setItem('screenshotAdminToken', fromQuery);
-          return fromQuery;
-        }
-        return (localStorage.getItem('screenshotAdminToken') ?? '').trim();
-      })();
+      const adminToken = (searchParams.get('adminToken') ?? '').trim();
 
       updateScreenshotEmptyState();
 
