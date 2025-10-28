@@ -27,6 +27,20 @@ let commentSequence = 0;
 const comments = [];
 const screenshotEntries = [];
 const adminToken = process.env.SCREENSHOT_ADMIN_TOKEN?.trim() ?? '';
+const COMMENT_TTL_MS = (() => {
+  const raw = Number(process.env.COMMENT_TTL_SECONDS);
+  if (Number.isFinite(raw) && raw > 0) {
+    return raw * 1000;
+  }
+  return 1000 * 60 * 60 * 24; // default 24 hours
+})();
+const COMMENT_SWEEP_INTERVAL_MS = (() => {
+  const raw = Number(process.env.COMMENT_SWEEP_INTERVAL_MS);
+  if (Number.isFinite(raw) && raw >= 60000) {
+    return raw;
+  }
+  return Math.max(Math.floor(COMMENT_TTL_MS / 4), 60000);
+})();
 
 void (async () => {
   try {
@@ -64,6 +78,15 @@ void (async () => {
     console.warn('[RealtimeNameServer] Failed to initialize screenshot storage.', error);
   }
 })();
+
+if (COMMENT_TTL_MS > 0) {
+  const timer = setInterval(() => {
+    pruneExpiredComments();
+  }, COMMENT_SWEEP_INTERVAL_MS);
+  if (typeof timer.unref === 'function') {
+    timer.unref();
+  }
+}
 
 app.get('/health', (_req, res) => {
   res.json({ status: 'ok' });
@@ -162,10 +185,13 @@ app.get('/frames', (_req, res) => {
 });
 
 app.get('/comments', (_req, res) => {
+  pruneExpiredComments();
   res.json(comments);
 });
 
 app.post('/comments', (req, res) => {
+  pruneExpiredComments();
+
   const { message, author } = req.body ?? {};
   const text = typeof message === 'string' ? message.trim() : '';
 
@@ -186,11 +212,36 @@ app.post('/comments', (req, res) => {
 
   comments.push(comment);
   if (comments.length > 200) {
-    comments.shift();
+    const removed = comments.shift();
+    if (removed) {
+      broadcastCommentDeletion(removed.id);
+    }
   }
 
   broadcastComment(comment);
   res.status(201).json(comment);
+});
+
+app.delete('/comments/:id', (req, res) => {
+  if (!adminToken) {
+    return res
+      .status(403)
+      .json({ error: 'Admin token is not configured on the server.' });
+  }
+
+  const token = (req.get('x-admin-token') ?? req.query.token ?? '').toString().trim();
+  if (token !== adminToken) {
+    return res.status(403).json({ error: 'Invalid admin token.' });
+  }
+
+  const index = comments.findIndex(comment => comment.id === req.params.id);
+  if (index === -1) {
+    return res.status(404).json({ error: 'Comment not found.' });
+  }
+
+  const [removed] = comments.splice(index, 1);
+  broadcastCommentDeletion(removed.id);
+  res.status(204).end();
 });
 
 app.get('/screenshots', (_req, res) => {
@@ -377,6 +428,20 @@ function broadcastComment(comment) {
   }
 }
 
+function broadcastCommentDeletion(id) {
+  if (!id || !wss.clients.size) {
+    return;
+  }
+
+  const payload = JSON.stringify({ type: 'comment:delete', id });
+
+  for (const client of wss.clients) {
+    if (client.readyState === WebSocket.OPEN) {
+      client.send(payload);
+    }
+  }
+}
+
 function broadcastScreenshot(screenshot) {
   if (!wss.clients.size) {
     return;
@@ -428,5 +493,27 @@ async function readScreenshotMetadata(id) {
     return JSON.parse(raw);
   } catch (error) {
     return null;
+  }
+}
+
+function pruneExpiredComments() {
+  if (!comments.length || COMMENT_TTL_MS <= 0) {
+    return;
+  }
+
+  const now = Date.now();
+
+  for (let index = comments.length - 1; index >= 0; index -= 1) {
+    const comment = comments[index];
+    const timestamp =
+      typeof comment?.timestamp === 'number' ? comment.timestamp : 0;
+    if (now - timestamp <= COMMENT_TTL_MS) {
+      continue;
+    }
+
+    comments.splice(index, 1);
+    if (comment?.id) {
+      broadcastCommentDeletion(comment.id);
+    }
   }
 }

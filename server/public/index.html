@@ -72,6 +72,32 @@
         font-size: 0.85rem;
       }
 
+      .comment-actions {
+        margin-top: 0.5rem;
+        text-align: right;
+      }
+
+      .comment-delete-button {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        padding: 0.35rem 0.7rem;
+        font-size: 0.85rem;
+        border: 1px solid #fca5a5;
+        border-radius: 0.35rem;
+        background: #fef2f2;
+        color: #b91c1c;
+      }
+
+      .comment-delete-button:disabled {
+        opacity: 0.7;
+        cursor: not-allowed;
+      }
+
+      .comment-delete-button:hover:not(:disabled) {
+        background: #fee2e2;
+      }
+
       .gallery {
         display: grid;
         grid-template-columns: repeat(auto-fit, minmax(14rem, 1fr));
@@ -220,6 +246,7 @@
       }
       const frameTokens = new Map();
       const knownComments = new Set();
+      const commentItems = new Map();
       const screenshotCards = new Map();
       const likedCache = new Set(
         JSON.parse(localStorage.getItem('screenshotLikes') ?? '[]')
@@ -315,6 +342,8 @@
             renderScreenshot(payload.screenshot, false);
           } else if (payload?.type === 'comment:new' && payload.comment) {
             appendComment(payload.comment, true);
+          } else if (payload?.type === 'comment:delete' && payload.id) {
+            removeComment(payload.id);
           }
         } catch (error) {
           console.error('Failed to parse message', error);
@@ -430,6 +459,7 @@
 
         const li = document.createElement('li');
         li.className = 'comment-item';
+        li.dataset.commentId = comment.id;
 
         const author = sanitize(comment.author ?? 'Anonymous');
         const message = sanitize(comment.message);
@@ -441,11 +471,92 @@
           <small>${timestamp}</small>
         `;
 
+        if (adminToken) {
+          const actions = document.createElement('div');
+          actions.className = 'comment-actions';
+
+          const deleteButton = document.createElement('button');
+          deleteButton.type = 'button';
+          deleteButton.className = 'comment-delete-button';
+          deleteButton.textContent = 'Delete';
+          deleteButton.addEventListener('click', () =>
+            handleCommentDelete(comment.id, deleteButton)
+          );
+
+          actions.append(deleteButton);
+          li.append(actions);
+        }
+
         if (prepend) {
           commentList.prepend(li);
         } else {
           commentList.append(li);
         }
+
+        commentItems.set(comment.id, li);
+      }
+
+      function handleCommentDelete(id, button) {
+        if (!adminToken) {
+          alert(
+            'Admin token is required. Add ?adminToken=YOUR_TOKEN to the URL and try again.'
+          );
+          return;
+        }
+
+        if (!id) {
+          return;
+        }
+
+        if (!confirm('Delete this comment?')) {
+          return;
+        }
+
+        if (button) {
+          button.disabled = true;
+        }
+
+        fetch(`/comments/${encodeURIComponent(id)}`, {
+          method: 'DELETE',
+          headers: {
+            'x-admin-token': adminToken
+          }
+        })
+          .then(response => {
+            if (response.status === 204) {
+              removeComment(id);
+              return;
+            }
+
+            return response.text().then(text => {
+              throw new Error(text || 'Failed to delete comment');
+            });
+          })
+          .catch(error => {
+            console.error('Failed to delete comment', error);
+            alert('Failed to delete comment.');
+          })
+          .finally(() => {
+            if (button) {
+              button.disabled = false;
+            }
+          });
+      }
+
+      function removeComment(id) {
+        if (!id) {
+          return;
+        }
+
+        const element = commentItems.get(id) ??
+          commentList.querySelector(`[data-comment-id="${id}"]`);
+
+        if (element?.parentElement) {
+          element.parentElement.removeChild(element);
+        }
+
+        commentItems.delete(id);
+        knownComments.delete(id);
       }
 
       function renderScreenshot(entry, prepend) {
