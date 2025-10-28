@@ -14,6 +14,7 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const uploadsRoot = path.join(__dirname, 'uploads');
 const screenshotsDir = path.join(uploadsRoot, 'screenshots');
+const adminSettingsPath = path.join(uploadsRoot, 'settings.json');
 
 app.use(cors());
 app.use(express.json({ limit: '2mb' }));
@@ -27,20 +28,27 @@ let commentSequence = 0;
 const comments = [];
 const screenshotEntries = [];
 const adminToken = process.env.SCREENSHOT_ADMIN_TOKEN?.trim() ?? '';
-const COMMENT_TTL_MS = (() => {
-  const raw = Number(process.env.COMMENT_TTL_SECONDS);
-  if (Number.isFinite(raw) && raw > 0) {
-    return raw * 1000;
-  }
-  return 1000 * 60 * 60 * 24; // default 24 hours
-})();
-const COMMENT_SWEEP_INTERVAL_MS = (() => {
+const envCommentSweepIntervalMs = (() => {
   const raw = Number(process.env.COMMENT_SWEEP_INTERVAL_MS);
   if (Number.isFinite(raw) && raw >= 60000) {
     return raw;
   }
-  return Math.max(Math.floor(COMMENT_TTL_MS / 4), 60000);
+  return null;
 })();
+const DEFAULT_COMMENT_TTL_SECONDS = (() => {
+  const raw = Number(process.env.COMMENT_TTL_SECONDS);
+  if (Number.isFinite(raw) && raw >= 0) {
+    return Math.floor(raw);
+  }
+  return 60 * 60 * 24; // default 24 hours
+})();
+const MAX_COMMENT_TTL_SECONDS = 60 * 60 * 24 * 7; // 7 days
+let commentTtlMs = DEFAULT_COMMENT_TTL_SECONDS * 1000;
+let commentSweepIntervalMs = computeCommentSweepIntervalMs(commentTtlMs);
+let commentSweepTimer = null;
+const settingsState = {
+  commentTtlSeconds: Math.round(commentTtlMs / 1000)
+};
 
 void (async () => {
   try {
@@ -79,14 +87,17 @@ void (async () => {
   }
 })();
 
-if (COMMENT_TTL_MS > 0) {
-  const timer = setInterval(() => {
-    pruneExpiredComments();
-  }, COMMENT_SWEEP_INTERVAL_MS);
-  if (typeof timer.unref === 'function') {
-    timer.unref();
+void (async () => {
+  try {
+    await loadCommentSettings();
+  } catch (error) {
+    console.warn('[RealtimeNameServer] Failed to load comment settings.', error);
+  } finally {
+    if (!commentSweepTimer) {
+      restartCommentSweepTimer();
+    }
   }
-}
+})();
 
 app.get('/health', (_req, res) => {
   res.json({ status: 'ok' });
@@ -229,7 +240,7 @@ app.delete('/comments/:id', (req, res) => {
       .json({ error: 'Admin token is not configured on the server.' });
   }
 
-  const token = (req.get('x-admin-token') ?? req.query.token ?? '').toString().trim();
+  const token = getRequestAdminToken(req);
   if (token !== adminToken) {
     return res.status(403).json({ error: 'Invalid admin token.' });
   }
@@ -242,6 +253,58 @@ app.delete('/comments/:id', (req, res) => {
   const [removed] = comments.splice(index, 1);
   broadcastCommentDeletion(removed.id);
   res.status(204).end();
+});
+
+app.get('/admin/comments/settings', (req, res) => {
+  if (!adminToken) {
+    return res
+      .status(403)
+      .json({ error: 'Admin token is not configured on the server.' });
+  }
+
+  const token = getRequestAdminToken(req);
+  if (token !== adminToken) {
+    return res.status(403).json({ error: 'Invalid admin token.' });
+  }
+
+  res.json({
+    commentTtlSeconds: Math.round(commentTtlMs / 1000),
+    commentTtlMs,
+    sweepIntervalMs: commentSweepIntervalMs
+  });
+});
+
+app.patch('/admin/comments/settings', async (req, res) => {
+  if (!adminToken) {
+    return res
+      .status(403)
+      .json({ error: 'Admin token is not configured on the server.' });
+  }
+
+  const token = getRequestAdminToken(req);
+  if (token !== adminToken) {
+    return res.status(403).json({ error: 'Invalid admin token.' });
+  }
+
+  const { commentTtlSeconds } = req.body ?? {};
+  const nextSeconds = Number(commentTtlSeconds);
+
+  if (!Number.isFinite(nextSeconds) || nextSeconds < 0) {
+    return res.status(400).json({ error: 'commentTtlSeconds must be a non-negative number.' });
+  }
+
+  const normalizedSeconds = Math.min(
+    Math.round(nextSeconds),
+    MAX_COMMENT_TTL_SECONDS
+  );
+
+  await setCommentTtlSeconds(normalizedSeconds, { persist: true });
+
+  res.json({
+    commentTtlSeconds: Math.round(commentTtlMs / 1000),
+    commentTtlMs,
+    sweepIntervalMs: commentSweepIntervalMs
+  });
 });
 
 app.get('/screenshots', (_req, res) => {
@@ -293,9 +356,7 @@ app.post('/screenshots', screenshotUploadMiddleware, async (req, res) => {
 });
 
 app.patch('/screenshots/:id/name', async (req, res) => {
-  const token = (req.get('x-admin-token') ?? req.query.token ?? '')
-    .toString()
-    .trim();
+  const token = getRequestAdminToken(req);
 
   if (!adminToken) {
     return res
@@ -497,7 +558,7 @@ async function readScreenshotMetadata(id) {
 }
 
 function pruneExpiredComments() {
-  if (!comments.length || COMMENT_TTL_MS <= 0) {
+  if (!comments.length || commentTtlMs <= 0) {
     return;
   }
 
@@ -507,7 +568,7 @@ function pruneExpiredComments() {
     const comment = comments[index];
     const timestamp =
       typeof comment?.timestamp === 'number' ? comment.timestamp : 0;
-    if (now - timestamp <= COMMENT_TTL_MS) {
+    if (now - timestamp <= commentTtlMs) {
       continue;
     }
 
@@ -516,4 +577,94 @@ function pruneExpiredComments() {
       broadcastCommentDeletion(comment.id);
     }
   }
+}
+
+async function loadCommentSettings() {
+  try {
+    const raw = await fs.readFile(adminSettingsPath, 'utf8');
+    const data = JSON.parse(raw);
+    const seconds = Number(data?.commentTtlSeconds);
+
+    if (Number.isFinite(seconds) && seconds >= 0) {
+      await setCommentTtlSeconds(
+        Math.min(seconds, MAX_COMMENT_TTL_SECONDS),
+        { persist: false }
+      );
+    }
+  } catch (error) {
+    if (error?.code !== 'ENOENT') {
+      throw error;
+    }
+  }
+}
+
+async function persistAdminSettings() {
+  await fs.mkdir(uploadsRoot, { recursive: true });
+  await fs.writeFile(
+    adminSettingsPath,
+    JSON.stringify(settingsState, null, 2),
+    'utf8'
+  );
+}
+
+async function setCommentTtlSeconds(seconds, { persist = false } = {}) {
+  if (!Number.isFinite(seconds) || seconds < 0) {
+    throw new TypeError('commentTtlSeconds must be a non-negative number.');
+  }
+
+  const clampedSeconds = Math.max(
+    0,
+    Math.min(MAX_COMMENT_TTL_SECONDS, Math.round(seconds))
+  );
+  const nextMs = clampedSeconds * 1000;
+
+  commentTtlMs = nextMs;
+  settingsState.commentTtlSeconds = clampedSeconds;
+  commentSweepIntervalMs = computeCommentSweepIntervalMs(commentTtlMs);
+  restartCommentSweepTimer();
+  pruneExpiredComments();
+
+  if (persist) {
+    await persistAdminSettings();
+  }
+
+  return {
+    commentTtlSeconds: clampedSeconds,
+    commentTtlMs
+  };
+}
+
+function computeCommentSweepIntervalMs(ttlMs) {
+  if (envCommentSweepIntervalMs) {
+    return envCommentSweepIntervalMs;
+  }
+
+  if (!Number.isFinite(ttlMs) || ttlMs <= 0) {
+    return 60000;
+  }
+
+  return Math.max(Math.floor(ttlMs / 4), 60000);
+}
+
+function restartCommentSweepTimer() {
+  if (commentSweepTimer) {
+    clearInterval(commentSweepTimer);
+    commentSweepTimer = null;
+  }
+
+  if (commentTtlMs <= 0) {
+    return;
+  }
+
+  commentSweepTimer = setInterval(() => {
+    pruneExpiredComments();
+  }, commentSweepIntervalMs);
+
+  if (typeof commentSweepTimer.unref === 'function') {
+    commentSweepTimer.unref();
+  }
+}
+
+function getRequestAdminToken(req) {
+  return (req.get('x-admin-token') ?? req.query.token ?? '').toString().trim();
 }

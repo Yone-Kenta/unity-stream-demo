@@ -98,6 +98,51 @@
         background: #fee2e2;
       }
 
+      .comment-settings {
+        margin-top: 1rem;
+        padding: 0.75rem 1rem;
+        border: 1px solid #ddd;
+        border-radius: 0.5rem;
+        background: rgba(0, 0, 0, 0.03);
+      }
+
+      .comment-settings h3 {
+        margin-top: 0;
+        margin-bottom: 0.5rem;
+      }
+
+      .comment-settings form {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(12rem, 1fr));
+        gap: 0.75rem;
+        align-items: end;
+      }
+
+      .comment-settings label {
+        grid-column: 1 / -1;
+        margin-bottom: 0.25rem;
+      }
+
+      #commentTtlInput {
+        max-width: 12rem;
+      }
+
+      .comment-settings button {
+        width: auto;
+      }
+
+      .comment-settings-hint,
+      .comment-settings-status {
+        grid-column: 1 / -1;
+        margin: 0;
+        font-size: 0.85rem;
+        color: #555;
+      }
+
+      .comment-settings-hint {
+        color: #666;
+      }
+
       .gallery {
         display: grid;
         grid-template-columns: repeat(auto-fit, minmax(14rem, 1fr));
@@ -221,6 +266,29 @@
         ></textarea>
         <button type="submit">Post</button>
       </form>
+      <div id="commentAdminPanel" class="comment-settings" hidden>
+        <h3>Comment expiration</h3>
+        <form id="commentSettingsForm">
+          <label for="commentTtlInput">Auto-delete comments after (hours)</label>
+          <input
+            id="commentTtlInput"
+            type="number"
+            min="0"
+            max="168"
+            step="0.1"
+            inputmode="decimal"
+            required
+            value="24"
+          />
+          <p class="comment-settings-hint">
+            Set to 0 to keep comments indefinitely. Maximum is 168 hours (7 days).
+          </p>
+          <button type="submit" class="comment-settings-submit">Update</button>
+          <p id="commentSettingsStatus" class="comment-settings-status" aria-live="polite">
+            Automatic deletion is disabled.
+          </p>
+        </form>
+      </div>
       <ul id="commentList" aria-live="polite"></ul>
     </section>
 
@@ -233,6 +301,10 @@
       const commentForm = document.getElementById('commentForm');
       const commentInput = document.getElementById('commentInput');
       const commentList = document.getElementById('commentList');
+      const commentAdminPanel = document.getElementById('commentAdminPanel');
+      const commentSettingsForm = document.getElementById('commentSettingsForm');
+      const commentTtlInput = document.getElementById('commentTtlInput');
+      const commentSettingsStatus = document.getElementById('commentSettingsStatus');
       const screenshotGallery = document.getElementById('screenshotGallery');
       const screenshotEmpty = document.getElementById('screenshotEmpty');
       const protocol = window.location.protocol === 'https:' ? 'wss' : 'ws';
@@ -251,9 +323,24 @@
       const likedCache = new Set(
         JSON.parse(localStorage.getItem('screenshotLikes') ?? '[]')
       );
+      const MAX_COMMENT_TTL_SECONDS = 60 * 60 * 24 * 7;
+      const MAX_COMMENT_TTL_HOURS = MAX_COMMENT_TTL_SECONDS / 3600;
 
       const searchParams = new URLSearchParams(window.location.search);
       const adminToken = (searchParams.get('adminToken') ?? '').trim();
+
+      if (adminToken) {
+        if (commentAdminPanel instanceof HTMLElement) {
+          commentAdminPanel.hidden = false;
+        }
+        if (commentSettingsForm instanceof HTMLFormElement) {
+          commentSettingsForm.addEventListener('submit', handleCommentSettingsSubmit);
+        }
+        setCommentSettingsStatus('Loading current settings…');
+        loadCommentSettings();
+      } else if (commentAdminPanel instanceof HTMLElement) {
+        commentAdminPanel.hidden = true;
+      }
 
       updateScreenshotEmptyState();
 
@@ -557,6 +644,196 @@
 
         commentItems.delete(id);
         knownComments.delete(id);
+      }
+
+      async function loadCommentSettings() {
+        if (!adminToken) {
+          return;
+        }
+
+        try {
+          const response = await fetch('/admin/comments/settings', {
+            headers: {
+              'x-admin-token': adminToken
+            }
+          });
+
+          if (!response.ok) {
+            const text = await response.text().catch(() => '');
+            throw new Error(text || 'Failed to load comment settings');
+          }
+
+          const data = await response.json().catch(() => null);
+          if (data) {
+            applyCommentSettingsData(data);
+          } else {
+            updateCommentSettingsStatus(0);
+          }
+        } catch (error) {
+          console.error('Failed to load comment settings', error);
+          setCommentSettingsStatus('Failed to load current settings.');
+        }
+      }
+
+      async function handleCommentSettingsSubmit(event) {
+        event.preventDefault();
+
+        if (!adminToken) {
+          alert(
+            'Admin token is required. Add ?adminToken=YOUR_TOKEN to the URL and try again.'
+          );
+          return;
+        }
+
+        if (!(commentTtlInput instanceof HTMLInputElement)) {
+          return;
+        }
+
+        const hours = Number(commentTtlInput.value);
+        if (!Number.isFinite(hours) || hours < 0) {
+          alert('Enter a non-negative number of hours.');
+          return;
+        }
+
+        if (hours > MAX_COMMENT_TTL_HOURS) {
+          alert(
+            `Please enter ${MAX_COMMENT_TTL_HOURS} hours or fewer (7 days).`
+          );
+          return;
+        }
+
+        const seconds = Math.round(hours * 3600);
+        const submitButton =
+          commentSettingsForm?.querySelector('.comment-settings-submit') ??
+          commentSettingsForm?.querySelector('button[type="submit"]');
+
+        if (submitButton) {
+          submitButton.disabled = true;
+        }
+
+        setCommentSettingsStatus('Saving…');
+
+        try {
+          const response = await fetch('/admin/comments/settings', {
+            method: 'PATCH',
+            headers: {
+              'Content-Type': 'application/json',
+              'x-admin-token': adminToken
+            },
+            body: JSON.stringify({ commentTtlSeconds: seconds })
+          });
+
+          if (!response.ok) {
+            const text = await response.text().catch(() => '');
+            throw new Error(text || 'Failed to update comment settings');
+          }
+
+          const data = await response.json().catch(() => null);
+          if (data) {
+            applyCommentSettingsData(data);
+            const effectiveSeconds = Number(data.commentTtlSeconds);
+            if (
+              Number.isFinite(effectiveSeconds) &&
+              effectiveSeconds < seconds
+            ) {
+              alert('Duration capped at 168 hours (7 days).');
+            }
+          } else {
+            await loadCommentSettings();
+          }
+        } catch (error) {
+          console.error('Failed to update comment settings', error);
+          setCommentSettingsStatus('Failed to update settings.');
+          alert('Failed to update comment expiration. Please try again later.');
+        } finally {
+          if (submitButton) {
+            submitButton.disabled = false;
+          }
+        }
+      }
+
+      function applyCommentSettingsData(data) {
+        const seconds = Number(data?.commentTtlSeconds);
+        const safeSeconds =
+          Number.isFinite(seconds) && seconds >= 0
+            ? Math.min(seconds, MAX_COMMENT_TTL_SECONDS)
+            : 0;
+
+        if (commentTtlInput instanceof HTMLInputElement) {
+          commentTtlInput.value = formatHoursFromSeconds(safeSeconds);
+        }
+
+        updateCommentSettingsStatus(safeSeconds);
+      }
+
+      function setCommentSettingsStatus(message) {
+        if (commentSettingsStatus instanceof HTMLElement) {
+          commentSettingsStatus.textContent = message;
+        }
+      }
+
+      function updateCommentSettingsStatus(seconds) {
+        setCommentSettingsStatus(describeCommentTtl(seconds));
+      }
+
+      function describeCommentTtl(seconds) {
+        if (!Number.isFinite(seconds) || seconds <= 0) {
+          return 'Automatic deletion is disabled.';
+        }
+
+        if (seconds < 60) {
+          return 'Comments auto-delete after less than a minute.';
+        }
+
+        const minutes = Math.round(seconds / 60);
+        if (minutes < 60) {
+          return `Comments auto-delete after ${minutes} minute${
+            minutes === 1 ? '' : 's'
+          }.`;
+        }
+
+        const hours = seconds / 3600;
+        if (hours < 48) {
+          const roundedHours = roundToOneDecimal(hours);
+          return `Comments auto-delete after ${roundedHours} hour${
+            roundedHours === 1 ? '' : 's'
+          }.`;
+        }
+
+        const days = seconds / 86400;
+        const roundedDays = roundToOneDecimal(days);
+        return `Comments auto-delete after ${roundedDays} day${
+          roundedDays === 1 ? '' : 's'
+        }.`;
+      }
+
+      function formatHoursFromSeconds(seconds) {
+        if (!Number.isFinite(seconds) || seconds <= 0) {
+          return '0';
+        }
+
+        const hours = seconds / 3600;
+        if (hours >= 10 || Number.isInteger(hours)) {
+          return Math.round(hours).toString();
+        }
+
+        if (hours >= 1) {
+          return (Math.round(hours * 10) / 10).toString();
+        }
+
+        return (Math.round(hours * 100) / 100).toString();
+      }
+
+      function roundToOneDecimal(value) {
+        if (!Number.isFinite(value)) {
+          return 0;
+        }
+
+        if (value >= 10) {
+          return Math.round(value);
+        }
+
+        return Math.round(value * 10) / 10;
       }
 
       function renderScreenshot(entry, prepend) {
