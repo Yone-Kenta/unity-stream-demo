@@ -67,10 +67,6 @@
         color: rgba(226, 232, 240, 0.7);
       }
 
-      #currentName {
-        font-weight: bold;
-      }
-
       textarea {
         resize: vertical;
         min-height: 6rem;
@@ -162,6 +158,29 @@
       .comment-settings h3 {
         margin-top: 0;
         margin-bottom: 0.5rem;
+      }
+
+      .comment-toggle {
+        display: inline-flex;
+        align-items: center;
+        gap: 0.5rem;
+        margin-bottom: 0.75rem;
+        font-size: 0.95rem;
+      }
+
+      .comment-toggle input {
+        width: 1.1rem;
+        height: 1.1rem;
+        accent-color: #60a5fa;
+      }
+
+      .comment-disabled-notice {
+        margin: 0 0 1rem;
+        padding: 0.75rem 1rem;
+        border-radius: 0.75rem;
+        background: rgba(127, 29, 29, 0.25);
+        border: 1px solid rgba(248, 113, 113, 0.35);
+        color: #fecaca;
       }
 
       .comment-settings form {
@@ -266,6 +285,17 @@
         cursor: default;
       }
 
+      .screenshot-delete-button {
+        background: rgba(127, 29, 29, 0.78);
+        border: 1px solid rgba(248, 113, 113, 0.65);
+        color: #fee2e2;
+      }
+
+      .screenshot-delete-button:hover:not(:disabled) {
+        background: rgba(153, 27, 27, 0.85);
+        border-color: rgba(248, 113, 113, 0.85);
+      }
+
       .screenshot-meta {
         font-size: 0.8rem;
         color: rgba(226, 232, 240, 0.7);
@@ -274,7 +304,6 @@
   </head>
   <body>
     <section aria-label="Realtime status">
-      <p>Current name: <span id="currentName">Loading…</span></p>
       <form id="nameForm">
         <label for="nameInput">New name</label>
         <input id="nameInput" name="name" placeholder="Enter a name" required />
@@ -310,6 +339,9 @@
 
     <section aria-label="Comments">
       <h2>Comments</h2>
+      <p id="commentsDisabledNotice" class="comment-disabled-notice" hidden>
+        Comments are currently disabled.
+      </p>
       <form id="commentForm">
         <label for="commentInput">Add a comment</label>
         <textarea
@@ -321,7 +353,15 @@
         <button type="submit">Post</button>
       </form>
       <div id="commentAdminPanel" class="comment-settings" hidden>
-        <h3>Comment expiration</h3>
+        <h3>Comment controls</h3>
+        <label class="comment-toggle">
+          <input
+            id="commentsEnabledToggle"
+            type="checkbox"
+            checked
+          />
+          <span>Enable comments</span>
+        </label>
         <form id="commentSettingsForm">
           <label for="commentTtlInput">Auto-delete comments after (hours)</label>
           <input
@@ -349,7 +389,7 @@
     <script type="module">
       const nameForm = document.getElementById('nameForm');
       const nameInput = document.getElementById('nameInput');
-      const currentName = document.getElementById('currentName');
+      const currentNameDisplay = document.getElementById('currentName');
       const cameraFrame = document.getElementById('cameraFrame');
       const overviewFrame = document.getElementById('overviewFrame');
       const commentForm = document.getElementById('commentForm');
@@ -359,6 +399,8 @@
       const commentSettingsForm = document.getElementById('commentSettingsForm');
       const commentTtlInput = document.getElementById('commentTtlInput');
       const commentSettingsStatus = document.getElementById('commentSettingsStatus');
+      const commentsDisabledNotice = document.getElementById('commentsDisabledNotice');
+      const commentsEnabledToggle = document.getElementById('commentsEnabledToggle');
       const screenshotGallery = document.getElementById('screenshotGallery');
       const screenshotEmpty = document.getElementById('screenshotEmpty');
       const protocol = window.location.protocol === 'https:' ? 'wss' : 'ws';
@@ -379,19 +421,25 @@
       );
       const MAX_COMMENT_TTL_SECONDS = 60 * 60 * 24 * 7;
       const MAX_COMMENT_TTL_HOURS = MAX_COMMENT_TTL_SECONDS / 3600;
+      let commentsEnabledState = true;
+      let commentsLoaded = false;
+      let commentsLoading = null;
 
       const searchParams = new URLSearchParams(window.location.search);
       const adminToken = (searchParams.get('adminToken') ?? '').trim();
 
       if (adminToken) {
-        if (commentAdminPanel instanceof HTMLElement) {
-          commentAdminPanel.hidden = false;
-        }
-        if (commentSettingsForm instanceof HTMLFormElement) {
-          commentSettingsForm.addEventListener('submit', handleCommentSettingsSubmit);
-        }
-        setCommentSettingsStatus('Loading current settings…');
-        loadCommentSettings();
+      if (commentAdminPanel instanceof HTMLElement) {
+        commentAdminPanel.hidden = false;
+      }
+      if (commentSettingsForm instanceof HTMLFormElement) {
+        commentSettingsForm.addEventListener('submit', handleCommentSettingsSubmit);
+      }
+      if (commentsEnabledToggle instanceof HTMLInputElement) {
+        commentsEnabledToggle.addEventListener('change', handleCommentsEnabledToggle);
+      }
+      setCommentSettingsStatus('Loading current settings…');
+      loadCommentSettings();
       } else if (commentAdminPanel instanceof HTMLElement) {
         commentAdminPanel.hidden = true;
       }
@@ -429,6 +477,10 @@
 
       commentForm.addEventListener('submit', async event => {
         event.preventDefault();
+        if (!commentsEnabledState) {
+          alert('Comments are disabled.');
+          return;
+        }
         const message = commentInput.value.trim();
 
         if (!message) {
@@ -468,7 +520,9 @@
         try {
           const payload = JSON.parse(event.data);
           if (payload?.type === 'name:update') {
-            currentName.textContent = payload.name || '(empty)';
+            if (currentNameDisplay) {
+              currentNameDisplay.textContent = payload.name || '(empty)';
+            }
           } else if (payload?.type === 'frame:update') {
             const cameraId =
               typeof payload.cameraId === 'string' && payload.cameraId
@@ -481,10 +535,14 @@
             renderScreenshot(payload.screenshot, true);
           } else if (payload?.type === 'screenshot:update' && payload.screenshot) {
             renderScreenshot(payload.screenshot, false);
+          } else if (payload?.type === 'screenshot:delete' && payload.id) {
+            removeScreenshot(payload.id);
           } else if (payload?.type === 'comment:new' && payload.comment) {
             appendComment(payload.comment, true);
           } else if (payload?.type === 'comment:delete' && payload.id) {
             removeComment(payload.id);
+          } else if (payload?.type === 'comment:status') {
+            applyCommentStatus(payload.enabled);
           }
         } catch (error) {
           console.error('Failed to parse message', error);
@@ -502,10 +560,14 @@
       fetch('/name')
         .then(res => res.json())
         .then(data => {
-          currentName.textContent = data?.name || '(empty)';
+          if (currentNameDisplay) {
+            currentNameDisplay.textContent = data?.name || '(empty)';
+          }
         })
         .catch(() => {
-          currentName.textContent = '(unknown)';
+          if (currentNameDisplay) {
+            currentNameDisplay.textContent = '(unknown)';
+          }
         });
 
       fetch('/frames')
@@ -544,19 +606,14 @@
           console.warn('Failed to load screenshots', error);
         });
 
-      fetch('/comments')
-        .then(res => (res.ok ? res.json() : []))
-        .then(items => {
-          if (!Array.isArray(items)) {
-            return;
-          }
-
-          for (const comment of items) {
-            appendComment(comment, false);
-          }
+      fetch('/comments/status')
+        .then(res => (res.ok ? res.json() : { enabled: true }))
+        .then(data => {
+          applyCommentStatus(data?.enabled);
         })
         .catch(error => {
-          console.warn('Failed to load comments', error);
+          console.warn('Failed to load comment status', error);
+          applyCommentStatus(true);
         });
 
       function refreshFrame(cameraId = 'main', timestamp = Date.now()) {
@@ -700,6 +757,67 @@
         knownComments.delete(id);
       }
 
+      function applyCommentStatus(enabled) {
+        updateCommentsEnabledUI(enabled);
+
+        if (commentsEnabledState && !commentsLoaded) {
+          loadComments();
+        }
+      }
+
+      function updateCommentsEnabledUI(enabled) {
+        commentsEnabledState = enabled !== false;
+
+        if (commentForm instanceof HTMLElement) {
+          commentForm.hidden = !commentsEnabledState;
+        }
+
+        if (commentsDisabledNotice instanceof HTMLElement) {
+          commentsDisabledNotice.hidden = commentsEnabledState;
+        }
+
+        if (commentList instanceof HTMLElement) {
+          const shouldHideList = !commentsEnabledState && !adminToken;
+          commentList.hidden = shouldHideList;
+        }
+
+        if (commentsEnabledToggle instanceof HTMLInputElement) {
+          commentsEnabledToggle.checked = commentsEnabledState;
+        }
+      }
+
+      function loadComments() {
+        if (commentsLoaded) {
+          return Promise.resolve();
+        }
+
+        if (commentsLoading) {
+          return commentsLoading;
+        }
+
+        commentsLoading = fetch('/comments')
+          .then(res => (res.ok ? res.json() : []))
+          .then(items => {
+            if (!Array.isArray(items)) {
+              return;
+            }
+
+            for (const comment of items) {
+              appendComment(comment, false);
+            }
+
+            commentsLoaded = true;
+          })
+          .catch(error => {
+            console.warn('Failed to load comments', error);
+          })
+          .finally(() => {
+            commentsLoading = null;
+          });
+
+        return commentsLoading;
+      }
+
       async function loadCommentSettings() {
         if (!adminToken) {
           return;
@@ -768,13 +886,21 @@
         setCommentSettingsStatus('Saving…');
 
         try {
+          const payload = {
+            commentTtlSeconds: seconds,
+            commentsEnabled:
+              commentsEnabledToggle instanceof HTMLInputElement
+                ? commentsEnabledToggle.checked
+                : commentsEnabledState
+          };
+
           const response = await fetch('/admin/comments/settings', {
             method: 'PATCH',
             headers: {
               'Content-Type': 'application/json',
               'x-admin-token': adminToken
             },
-            body: JSON.stringify({ commentTtlSeconds: seconds })
+            body: JSON.stringify(payload)
           });
 
           if (!response.ok) {
@@ -806,6 +932,41 @@
         }
       }
 
+      async function handleCommentsEnabledToggle(event) {
+        if (!adminToken || !(event?.target instanceof HTMLInputElement)) {
+          return;
+        }
+
+        const checked = event.target.checked;
+
+        try {
+          const response = await fetch('/admin/comments/settings', {
+            method: 'PATCH',
+            headers: {
+              'Content-Type': 'application/json',
+              'x-admin-token': adminToken
+            },
+            body: JSON.stringify({ commentsEnabled: checked })
+          });
+
+          if (!response.ok) {
+            const text = await response.text().catch(() => '');
+            throw new Error(text || 'Failed to update comment availability');
+          }
+
+          const data = await response.json().catch(() => null);
+          if (data) {
+            applyCommentSettingsData(data);
+          }
+        } catch (error) {
+          console.error('Failed to update comment availability', error);
+          alert('Failed to update comment availability.');
+          if (commentsEnabledToggle instanceof HTMLInputElement) {
+            commentsEnabledToggle.checked = commentsEnabledState;
+          }
+        }
+      }
+
       function applyCommentSettingsData(data) {
         const seconds = Number(data?.commentTtlSeconds);
         const safeSeconds =
@@ -818,6 +979,7 @@
         }
 
         updateCommentSettingsStatus(safeSeconds);
+        applyCommentStatus(data?.commentsEnabled);
       }
 
       function setCommentSettingsStatus(message) {
@@ -959,6 +1121,28 @@
           screenshotCards.set(entry.id, card);
         }
 
+        const actions = card.querySelector('.screenshot-actions');
+        if (actions) {
+          let deleteButton = actions.querySelector('.screenshot-delete-button');
+          if (adminToken) {
+            if (!deleteButton) {
+              deleteButton = document.createElement('button');
+              deleteButton.type = 'button';
+              deleteButton.className = 'screenshot-delete-button';
+              deleteButton.textContent = 'Delete';
+              deleteButton.addEventListener('click', () =>
+                handleScreenshotDelete(entry.id, deleteButton)
+              );
+              actions.prepend(deleteButton);
+            }
+            deleteButton.hidden = false;
+            deleteButton.disabled = false;
+          } else if (deleteButton) {
+            deleteButton.remove();
+            deleteButton = null;
+          }
+        }
+
         const capturedAt = new Date(
           typeof entry.timestamp === 'number' ? entry.timestamp : Date.now()
         );
@@ -1021,6 +1205,53 @@
         updateScreenshotEmptyState();
       }
 
+      function handleScreenshotDelete(id, button) {
+        if (!adminToken) {
+          alert(
+            'Admin token is required. Add ?adminToken=YOUR_TOKEN to the URL and try again.'
+          );
+          return;
+        }
+
+        if (!id) {
+          return;
+        }
+
+        if (!confirm('Delete this screenshot?')) {
+          return;
+        }
+
+        if (button) {
+          button.disabled = true;
+        }
+
+        fetch(`/screenshots/${encodeURIComponent(id)}`, {
+          method: 'DELETE',
+          headers: {
+            'x-admin-token': adminToken
+          }
+        })
+          .then(response => {
+            if (response.status === 204) {
+              removeScreenshot(id);
+              return;
+            }
+
+            return response.text().then(text => {
+              throw new Error(text || 'Failed to delete screenshot');
+            });
+          })
+          .catch(error => {
+            console.error('Failed to delete screenshot', error);
+            alert('Failed to delete screenshot.');
+          })
+          .finally(() => {
+            if (button) {
+              button.disabled = false;
+            }
+          });
+      }
+
       function handleLike(id, button) {
         if (likedCache.has(id)) {
           return;
@@ -1071,6 +1302,30 @@
           likeButton.textContent = `❤️ ${likes}`;
           likeButton.disabled = likedCache.has(id);
         }
+      }
+
+      function removeScreenshot(id) {
+        if (!id) {
+          return;
+        }
+
+        const card =
+          screenshotCards.get(id) ?? document.getElementById(`screenshot-${id}`);
+
+        if (card?.parentElement) {
+          card.parentElement.removeChild(card);
+        }
+
+        screenshotCards.delete(id);
+
+        if (likedCache.delete(id)) {
+          localStorage.setItem(
+            'screenshotLikes',
+            JSON.stringify([...likedCache])
+          );
+        }
+
+        updateScreenshotEmptyState();
       }
 
       function promptRename(id) {

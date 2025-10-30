@@ -27,6 +27,7 @@ const defaultCameraId = 'main';
 let commentSequence = 0;
 const comments = [];
 const screenshotEntries = [];
+let commentsEnabled = true;
 const adminToken = process.env.SCREENSHOT_ADMIN_TOKEN?.trim() ?? '';
 const envCommentSweepIntervalMs = (() => {
   const raw = Number(process.env.COMMENT_SWEEP_INTERVAL_MS);
@@ -47,7 +48,8 @@ let commentTtlMs = DEFAULT_COMMENT_TTL_SECONDS * 1000;
 let commentSweepIntervalMs = computeCommentSweepIntervalMs(commentTtlMs);
 let commentSweepTimer = null;
 const settingsState = {
-  commentTtlSeconds: Math.round(commentTtlMs / 1000)
+  commentTtlSeconds: Math.round(commentTtlMs / 1000),
+  commentsEnabled
 };
 
 void (async () => {
@@ -122,6 +124,7 @@ app.post('/name', (req, res) => {
 
 wss.on('connection', socket => {
   socket.send(JSON.stringify({ type: 'name:update', name: currentName }));
+  socket.send(JSON.stringify({ type: 'comment:status', enabled: commentsEnabled }));
 
   if (frames.size) {
     for (const [cameraId, record] of frames) {
@@ -200,8 +203,18 @@ app.get('/comments', (_req, res) => {
   res.json(comments);
 });
 
+app.get('/comments/status', (_req, res) => {
+  res.json({ enabled: commentsEnabled });
+});
+
 app.post('/comments', (req, res) => {
   pruneExpiredComments();
+
+  if (!commentsEnabled) {
+    return res
+      .status(503)
+      .json({ error: 'Comments are currently disabled.' });
+  }
 
   const { message, author } = req.body ?? {};
   const text = typeof message === 'string' ? message.trim() : '';
@@ -270,7 +283,8 @@ app.get('/admin/comments/settings', (req, res) => {
   res.json({
     commentTtlSeconds: Math.round(commentTtlMs / 1000),
     commentTtlMs,
-    sweepIntervalMs: commentSweepIntervalMs
+    sweepIntervalMs: commentSweepIntervalMs,
+    commentsEnabled
   });
 });
 
@@ -286,24 +300,38 @@ app.patch('/admin/comments/settings', async (req, res) => {
     return res.status(403).json({ error: 'Invalid admin token.' });
   }
 
-  const { commentTtlSeconds } = req.body ?? {};
-  const nextSeconds = Number(commentTtlSeconds);
+  const body = req.body ?? {};
+  const hasTtl = Object.prototype.hasOwnProperty.call(body, 'commentTtlSeconds');
+  const hasEnabled = Object.prototype.hasOwnProperty.call(body, 'commentsEnabled');
 
-  if (!Number.isFinite(nextSeconds) || nextSeconds < 0) {
-    return res.status(400).json({ error: 'commentTtlSeconds must be a non-negative number.' });
+  if (!hasTtl && !hasEnabled) {
+    return res.status(400).json({ error: 'No settings were provided.' });
   }
 
-  const normalizedSeconds = Math.min(
-    Math.round(nextSeconds),
-    MAX_COMMENT_TTL_SECONDS
-  );
+  if (hasEnabled) {
+    await setCommentsEnabled(Boolean(body.commentsEnabled), { persist: !hasTtl });
+  }
 
-  await setCommentTtlSeconds(normalizedSeconds, { persist: true });
+  if (hasTtl) {
+    const nextSeconds = Number(body.commentTtlSeconds);
+
+    if (!Number.isFinite(nextSeconds) || nextSeconds < 0) {
+      return res.status(400).json({ error: 'commentTtlSeconds must be a non-negative number.' });
+    }
+
+    const normalizedSeconds = Math.min(
+      Math.round(nextSeconds),
+      MAX_COMMENT_TTL_SECONDS
+    );
+
+    await setCommentTtlSeconds(normalizedSeconds, { persist: true });
+  }
 
   res.json({
     commentTtlSeconds: Math.round(commentTtlMs / 1000),
     commentTtlMs,
-    sweepIntervalMs: commentSweepIntervalMs
+    sweepIntervalMs: commentSweepIntervalMs,
+    commentsEnabled
   });
 });
 
@@ -389,6 +417,65 @@ app.patch('/screenshots/:id/name', async (req, res) => {
 
   broadcastScreenshotUpdate(entry);
   res.json(entry);
+});
+
+app.delete('/screenshots/:id', async (req, res) => {
+  if (!adminToken) {
+    return res
+      .status(403)
+      .json({ error: 'Admin token is not configured on the server.' });
+  }
+
+  const token = getRequestAdminToken(req);
+  if (token !== adminToken) {
+    return res.status(403).json({ error: 'Invalid admin token.' });
+  }
+
+  const index = screenshotEntries.findIndex(entry => entry.id === req.params.id);
+  if (index === -1) {
+    return res.status(404).json({ error: 'Screenshot not found.' });
+  }
+
+  const [entry] = screenshotEntries.splice(index, 1);
+  const filePath = path.join(
+    screenshotsDir,
+    entry.fileName ?? `${entry.id}.jpg`
+  );
+  const metadataPath = path.join(screenshotsDir, `${entry.id}.json`);
+  const failures = [];
+
+  try {
+    await fs.unlink(filePath);
+  } catch (error) {
+    if (error?.code !== 'ENOENT') {
+      failures.push(error);
+    }
+  }
+
+  try {
+    await fs.unlink(metadataPath);
+  } catch (error) {
+    if (error?.code !== 'ENOENT') {
+      failures.push(error);
+    }
+  }
+
+  if (failures.length) {
+    screenshotEntries.splice(index, 0, entry);
+    await persistScreenshotMetadata(entry).catch(() => {
+      /* ignore persistence failure while restoring state */
+    });
+    console.error(
+      '[RealtimeNameServer] Failed to delete screenshot files.',
+      failures[0]
+    );
+    return res
+      .status(500)
+      .json({ error: 'Failed to delete screenshot from storage.' });
+  }
+
+  broadcastScreenshotDeletion(entry.id);
+  res.status(204).end();
 });
 
 app.post('/screenshots/:id/like', async (req, res) => {
@@ -503,6 +590,23 @@ function broadcastCommentDeletion(id) {
   }
 }
 
+function broadcastCommentStatus() {
+  if (!wss.clients.size) {
+    return;
+  }
+
+  const payload = JSON.stringify({
+    type: 'comment:status',
+    enabled: commentsEnabled
+  });
+
+  for (const client of wss.clients) {
+    if (client.readyState === WebSocket.OPEN) {
+      client.send(payload);
+    }
+  }
+}
+
 function broadcastScreenshot(screenshot) {
   if (!wss.clients.size) {
     return;
@@ -523,6 +627,20 @@ function broadcastScreenshotUpdate(screenshot) {
   }
 
   const payload = JSON.stringify({ type: 'screenshot:update', screenshot });
+
+  for (const client of wss.clients) {
+    if (client.readyState === WebSocket.OPEN) {
+      client.send(payload);
+    }
+  }
+}
+
+function broadcastScreenshotDeletion(id) {
+  if (!id || !wss.clients.size) {
+    return;
+  }
+
+  const payload = JSON.stringify({ type: 'screenshot:delete', id });
 
   for (const client of wss.clients) {
     if (client.readyState === WebSocket.OPEN) {
@@ -591,6 +709,11 @@ async function loadCommentSettings() {
         { persist: false }
       );
     }
+
+    if (typeof data?.commentsEnabled === 'boolean') {
+      commentsEnabled = data.commentsEnabled;
+      settingsState.commentsEnabled = commentsEnabled;
+    }
   } catch (error) {
     if (error?.code !== 'ENOENT') {
       throw error;
@@ -632,6 +755,27 @@ async function setCommentTtlSeconds(seconds, { persist = false } = {}) {
     commentTtlSeconds: clampedSeconds,
     commentTtlMs
   };
+}
+
+async function setCommentsEnabled(enabled, { persist = false } = {}) {
+  const nextEnabled = Boolean(enabled);
+
+  if (commentsEnabled === nextEnabled) {
+    if (persist) {
+      await persistAdminSettings();
+    }
+    return { commentsEnabled };
+  }
+
+  commentsEnabled = nextEnabled;
+  settingsState.commentsEnabled = commentsEnabled;
+
+  if (persist) {
+    await persistAdminSettings();
+  }
+
+  broadcastCommentStatus();
+  return { commentsEnabled };
 }
 
 function computeCommentSweepIntervalMs(ttlMs) {
