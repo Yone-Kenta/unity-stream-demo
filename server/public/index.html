@@ -266,17 +266,6 @@
         cursor: default;
       }
 
-      .screenshot-delete-button {
-        background: rgba(127, 29, 29, 0.78);
-        border: 1px solid rgba(248, 113, 113, 0.65);
-        color: #fee2e2;
-      }
-
-      .screenshot-delete-button:hover:not(:disabled) {
-        background: rgba(153, 27, 27, 0.85);
-        border-color: rgba(248, 113, 113, 0.85);
-      }
-
       .screenshot-meta {
         font-size: 0.8rem;
         color: rgba(226, 232, 240, 0.7);
@@ -492,8 +481,6 @@
             renderScreenshot(payload.screenshot, true);
           } else if (payload?.type === 'screenshot:update' && payload.screenshot) {
             renderScreenshot(payload.screenshot, false);
-          } else if (payload?.type === 'screenshot:delete' && payload.id) {
-            removeScreenshot(payload.id);
           } else if (payload?.type === 'comment:new' && payload.comment) {
             appendComment(payload.comment, true);
           } else if (payload?.type === 'comment:delete' && payload.id) {
@@ -972,28 +959,6 @@
           screenshotCards.set(entry.id, card);
         }
 
-        const actions = card.querySelector('.screenshot-actions');
-        if (actions) {
-          let deleteButton = actions.querySelector('.screenshot-delete-button');
-          if (adminToken) {
-            if (!deleteButton) {
-              deleteButton = document.createElement('button');
-              deleteButton.type = 'button';
-              deleteButton.className = 'screenshot-delete-button';
-              deleteButton.textContent = 'Delete';
-              deleteButton.addEventListener('click', () =>
-                handleScreenshotDelete(entry.id, deleteButton)
-              );
-              actions.prepend(deleteButton);
-            }
-            deleteButton.hidden = false;
-            deleteButton.disabled = false;
-          } else if (deleteButton) {
-            deleteButton.remove();
-            deleteButton = null;
-          }
-        }
-
         const capturedAt = new Date(
           typeof entry.timestamp === 'number' ? entry.timestamp : Date.now()
         );
@@ -1056,53 +1021,6 @@
         updateScreenshotEmptyState();
       }
 
-      function handleScreenshotDelete(id, button) {
-        if (!adminToken) {
-          alert(
-            'Admin token is required. Add ?adminToken=YOUR_TOKEN to the URL and try again.'
-          );
-          return;
-        }
-
-        if (!id) {
-          return;
-        }
-
-        if (!confirm('Delete this screenshot?')) {
-          return;
-        }
-
-        if (button) {
-          button.disabled = true;
-        }
-
-        fetch(`/screenshots/${encodeURIComponent(id)}`, {
-          method: 'DELETE',
-          headers: {
-            'x-admin-token': adminToken
-          }
-        })
-          .then(response => {
-            if (response.status === 204) {
-              removeScreenshot(id);
-              return;
-            }
-
-            return response.text().then(text => {
-              throw new Error(text || 'Failed to delete screenshot');
-            });
-          })
-          .catch(error => {
-            console.error('Failed to delete screenshot', error);
-            alert('Failed to delete screenshot.');
-          })
-          .finally(() => {
-            if (button) {
-              button.disabled = false;
-            }
-          });
-      }
-
       function handleLike(id, button) {
         if (likedCache.has(id)) {
           return;
@@ -1153,30 +1071,6 @@
           likeButton.textContent = `❤️ ${likes}`;
           likeButton.disabled = likedCache.has(id);
         }
-      }
-
-      function removeScreenshot(id) {
-        if (!id) {
-          return;
-        }
-
-        const card =
-          screenshotCards.get(id) ?? document.getElementById(`screenshot-${id}`);
-
-        if (card?.parentElement) {
-          card.parentElement.removeChild(card);
-        }
-
-        screenshotCards.delete(id);
-
-        if (likedCache.delete(id)) {
-          localStorage.setItem(
-            'screenshotLikes',
-            JSON.stringify([...likedCache])
-          );
-        }
-
-        updateScreenshotEmptyState();
       }
 
       function promptRename(id) {

@@ -391,65 +391,6 @@ app.patch('/screenshots/:id/name', async (req, res) => {
   res.json(entry);
 });
 
-app.delete('/screenshots/:id', async (req, res) => {
-  if (!adminToken) {
-    return res
-      .status(403)
-      .json({ error: 'Admin token is not configured on the server.' });
-  }
-
-  const token = getRequestAdminToken(req);
-  if (token !== adminToken) {
-    return res.status(403).json({ error: 'Invalid admin token.' });
-  }
-
-  const index = screenshotEntries.findIndex(entry => entry.id === req.params.id);
-  if (index === -1) {
-    return res.status(404).json({ error: 'Screenshot not found.' });
-  }
-
-  const [entry] = screenshotEntries.splice(index, 1);
-  const filePath = path.join(
-    screenshotsDir,
-    entry.fileName ?? `${entry.id}.jpg`
-  );
-  const metadataPath = path.join(screenshotsDir, `${entry.id}.json`);
-  const failures = [];
-
-  try {
-    await fs.unlink(filePath);
-  } catch (error) {
-    if (error?.code !== 'ENOENT') {
-      failures.push(error);
-    }
-  }
-
-  try {
-    await fs.unlink(metadataPath);
-  } catch (error) {
-    if (error?.code !== 'ENOENT') {
-      failures.push(error);
-    }
-  }
-
-  if (failures.length) {
-    screenshotEntries.splice(index, 0, entry);
-    await persistScreenshotMetadata(entry).catch(() => {
-      /* ignore persistence failure while restoring state */
-    });
-    console.error(
-      '[RealtimeNameServer] Failed to delete screenshot files.',
-      failures[0]
-    );
-    return res
-      .status(500)
-      .json({ error: 'Failed to delete screenshot from storage.' });
-  }
-
-  broadcastScreenshotDeletion(entry.id);
-  res.status(204).end();
-});
-
 app.post('/screenshots/:id/like', async (req, res) => {
   const entry = getScreenshot(req.params.id);
   if (!entry) {
@@ -582,20 +523,6 @@ function broadcastScreenshotUpdate(screenshot) {
   }
 
   const payload = JSON.stringify({ type: 'screenshot:update', screenshot });
-
-  for (const client of wss.clients) {
-    if (client.readyState === WebSocket.OPEN) {
-      client.send(payload);
-    }
-  }
-}
-
-function broadcastScreenshotDeletion(id) {
-  if (!id || !wss.clients.size) {
-    return;
-  }
-
-  const payload = JSON.stringify({ type: 'screenshot:delete', id });
 
   for (const client of wss.clients) {
     if (client.readyState === WebSocket.OPEN) {
