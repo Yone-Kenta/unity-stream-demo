@@ -4,11 +4,22 @@
     <meta charset="utf-8" />
     <title>Unity Name Sync Demo</title>
     <style>
+      html {
+        min-height: 100%;
+        background: url('/images/night-sky.jpg') center / cover fixed no-repeat,
+          #050816;
+      }
+
       body {
         font-family: system-ui, sans-serif;
         padding: 2rem;
         margin: 0 auto;
         max-width: 60rem;
+        color: #f3f4f6;
+        background: rgba(5, 8, 22, 0.82);
+        backdrop-filter: blur(4px);
+        box-shadow: 0 2rem 4rem rgba(0, 0, 0, 0.45);
+        border-radius: 1rem;
       }
 
       img {
@@ -32,6 +43,30 @@
         margin-bottom: 0.75rem;
       }
 
+      input,
+      textarea,
+      select {
+        background: rgba(15, 23, 42, 0.65);
+        border: 1px solid rgba(148, 163, 184, 0.35);
+        border-radius: 0.5rem;
+        color: inherit;
+        padding: 0.6rem 0.75rem;
+        box-sizing: border-box;
+      }
+
+      input:focus,
+      textarea:focus,
+      select:focus {
+        outline: none;
+        border-color: rgba(96, 165, 250, 0.85);
+        box-shadow: 0 0 0 0.2rem rgba(96, 165, 250, 0.25);
+      }
+
+      input::placeholder,
+      textarea::placeholder {
+        color: rgba(226, 232, 240, 0.7);
+      }
+
       #currentName {
         font-weight: bold;
       }
@@ -40,11 +75,26 @@
         resize: vertical;
         min-height: 6rem;
         font-family: inherit;
-        padding: 0.5rem;
+        padding: 0.75rem;
       }
 
       button {
         cursor: pointer;
+        background: rgba(59, 130, 246, 0.82);
+        border: 1px solid rgba(191, 219, 254, 0.55);
+        color: #f9fafb;
+        border-radius: 0.5rem;
+        padding: 0.65rem 1rem;
+      }
+
+      button:hover {
+        background: rgba(96, 165, 250, 0.92);
+        border-color: rgba(191, 219, 254, 0.85);
+      }
+
+      button:disabled {
+        opacity: 0.65;
+        cursor: not-allowed;
       }
 
       ul {
@@ -54,10 +104,11 @@
 
       .comment-item {
         padding: 0.75rem 1rem;
-        border: 1px solid #ddd;
-        border-radius: 0.5rem;
+        border: 1px solid rgba(148, 163, 184, 0.25);
+        border-radius: 0.75rem;
         margin-bottom: 0.75rem;
-        background: rgba(0, 0, 0, 0.02);
+        background: rgba(15, 23, 42, 0.7);
+        backdrop-filter: blur(3px);
       }
 
       .comment-item strong {
@@ -68,7 +119,7 @@
       .comment-item small {
         display: block;
         margin-top: 0.5rem;
-        color: #666;
+        color: rgba(226, 232, 240, 0.78);
         font-size: 0.85rem;
       }
 
@@ -81,12 +132,12 @@
         display: inline-flex;
         align-items: center;
         justify-content: center;
-        padding: 0.35rem 0.7rem;
+        padding: 0.35rem 0.85rem;
         font-size: 0.85rem;
-        border: 1px solid #fca5a5;
-        border-radius: 0.35rem;
-        background: #fef2f2;
-        color: #b91c1c;
+        border: 1px solid rgba(248, 113, 113, 0.65);
+        border-radius: 0.5rem;
+        background: rgba(127, 29, 29, 0.78);
+        color: #fee2e2;
       }
 
       .comment-delete-button:disabled {
@@ -95,15 +146,17 @@
       }
 
       .comment-delete-button:hover:not(:disabled) {
-        background: #fee2e2;
+        background: rgba(153, 27, 27, 0.85);
+        border-color: rgba(248, 113, 113, 0.85);
       }
 
       .comment-settings {
         margin-top: 1rem;
         padding: 0.75rem 1rem;
-        border: 1px solid #ddd;
-        border-radius: 0.5rem;
-        background: rgba(0, 0, 0, 0.03);
+        border: 1px solid rgba(148, 163, 184, 0.25);
+        border-radius: 0.75rem;
+        background: rgba(15, 23, 42, 0.7);
+        backdrop-filter: blur(3px);
       }
 
       .comment-settings h3 {
@@ -136,11 +189,11 @@
         grid-column: 1 / -1;
         margin: 0;
         font-size: 0.85rem;
-        color: #555;
+        color: rgba(226, 232, 240, 0.75);
       }
 
       .comment-settings-hint {
-        color: #666;
+        color: rgba(226, 232, 240, 0.65);
       }
 
       .gallery {
@@ -151,9 +204,10 @@
       }
 
       .screenshot-card {
-        border: 1px solid #ddd;
-        border-radius: 0.5rem;
-        background: rgba(0, 0, 0, 0.03);
+        border: 1px solid rgba(148, 163, 184, 0.25);
+        border-radius: 0.75rem;
+        background: rgba(15, 23, 42, 0.7);
+        backdrop-filter: blur(3px);
         padding: 0.75rem;
         display: flex;
         flex-direction: column;
@@ -162,12 +216,12 @@
 
       .screenshot-card time {
         font-size: 0.85rem;
-        color: #555;
+        color: rgba(226, 232, 240, 0.75);
       }
 
       .screenshot-card a {
         font-size: 0.85rem;
-        color: #0a66c2;
+        color: #93c5fd;
         text-decoration: none;
       }
 
@@ -214,7 +268,7 @@
 
       .screenshot-meta {
         font-size: 0.8rem;
-        color: #666;
+        color: rgba(226, 232, 240, 0.7);
       }
     </style>
   </head>
